@@ -127,7 +127,7 @@ public:
             char const *file,
             char const *function,
             int line,
-            std::string_view key):
+            std::string key):
         severity_(severity),
         file_(file),
         fn_(function),
@@ -146,7 +146,7 @@ private:
     std::string file_;
     std::string fn_;
     int line_;
-    std::string_view key_;
+    std::string key_;
 };
 
 #define TCC_LOG_LEVEL_DEBUG {}

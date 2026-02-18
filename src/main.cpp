@@ -156,7 +156,7 @@ void printHistories(TCCStore const &tdb,
     for(auto const &[node, hi]: instances) {
         fmt::print(FLOG, "History for {}:\n", node);
         fmt::print(FLOG, "{}\n", String(tdb, hi));
-        fmt::print(FLOG, "end History for {}:\n", node);
+        fmt::print(FLOG, "end History for {}:\n\n", node);
         llvm::outs() << "History for " << node << ":\n";
         llvm::outs() << String(tdb, hi) << "\n";
     }

@@ -4,9 +4,10 @@
 
 CC_KIND(FunctionCall)
 CC_KIND(FptrAssignment)
-CC_KIND(FptrArg)
+CC_KIND(FptrCall)
 CC_KIND(Assignment)
 CC_KIND(AddressOf)
+CC_KIND(PointerArithmetic)
 CC_KIND(Deref)
 CC_KIND(SwitchCondition)
 CC_KIND(IfElseCondition)

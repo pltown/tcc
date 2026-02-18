@@ -199,14 +199,14 @@ namespace tcc {
 
     // Clang throws error if this is defined after templated counterpart for String() on prototypes
     // However, according to overload resolution rules non-template overload should take priority
-    auto printLocation(ASTContext const &context,
+    auto stringLocation(ASTContext const &context,
             FunctionProtoType const &proto)
         -> std::string {
         return "@{unk}";
     }
 
     template<typename StmtOrDecl>
-    auto printLocation(ASTContext const &context,
+    auto stringLocation(ASTContext const &context,
             StmtOrDecl const &node)
         -> std::string {
 
@@ -234,7 +234,7 @@ namespace tcc {
         llvm::raw_string_ostream stream(dump);
         auto policy = context.getLangOpts();
         prettyPrint(node, stream, policy);
-        //dump += "@[" + printLocation(context, node) + "]";
+        //dump += "@[" + stringLocation(context, node) + "]";
         return dump;
     }
 
@@ -242,7 +242,7 @@ namespace tcc {
             NamedDecl const &decl)
         -> std::string {
         auto str = decl.getNameAsString();
-        //str += "@[" + printLocation(context, decl) + "]";
+        //str += "@[" + stringLocation(context, decl) + "]";
         return str;
     }
 

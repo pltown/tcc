@@ -66,7 +66,7 @@ void _qsort(void* v, int size, int left, int right,
 
     // casting void* to char* so that operations
     // can be done.
-    void* vl = (char*)(v + (left * size));
+    void* vl = (char*)(v) + (left * size);
     void* vr = (char*)(v + (mid * size));
     swap(vl, vr, size);
     last = left;

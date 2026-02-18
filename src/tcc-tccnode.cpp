@@ -67,11 +67,13 @@ namespace tcc {
 
     class TCCKey {
     public:
-        explicit TCCKey(std::string id, std::optional<std::string> prefix = {}):
+        explicit TCCKey(std::string id,
+                std::optional<std::string> container = {},
+                std::optional<std::string> operation = {}):
             id_(id),
-            prefix_(prefix.value_or("")) {
-                //hash_ = prefix_ + "." + tail();
-                hash_ = prefix_ + tail();
+            container_(container.value_or("")),
+            operation_(operation.value_or("")) {
+                hash_ = operation_ + container_ + tail();
             }
 
         /*
@@ -85,7 +87,10 @@ namespace tcc {
         }
 
         auto prefix() const -> std::string {
-            return prefix_;
+            if(operation_.empty()) {
+                return container_;
+            }
+            return ".__" + operation_ + "__." + container_;
         }
 
         auto tail() const -> std::string {
@@ -110,8 +115,9 @@ namespace tcc {
 
     private:
         std::string id_ {"BIGBUG"};
-        std::string prefix_ {"BUG"};
+        std::string container_ {"BUG"};
         std::string hash_ {"BUG2"};
+        std::string operation_{"BUG3"};
     };
 
     auto String(TCCKey const &k) -> std::string {
@@ -141,7 +147,7 @@ namespace tcc {
     };
 
     auto String(TCCNode const &n) -> std::string  {
-        return std::string(n.id()) + "(" + n.type_ + ")";
+        return std::string(n.id()) + ":" + n.type_;
     }
 
     auto getPointedAtType(ASTContext const &context,
@@ -298,7 +304,9 @@ namespace tcc {
 
         auto const logKey = fn + ".$" + std::to_string(parmIndex);
         TCC_DEBUG_FN(logKey);
-        return TCCKey("$" + std::to_string(parmIndex), fn);
+        auto qn = TCCKey("$" + std::to_string(parmIndex), fn);
+        TCC_DEBUG(logKey, "QN: {}", String(qn));
+        return qn;
     }
 
     auto qualifiedNameForParm(ASTContext const &context,
@@ -332,7 +340,9 @@ namespace tcc {
         if(!name) {
             TCC_ERROR(logKey, "Bad name!");
             llvm::errs() << "Bad name for " << String(context, vd) << "\n";
-            return TCCKey("~tcckErr(" + String(context, vd) + ")");
+            auto qn = TCCKey("~decl~err(" + String(context, vd) + ")");
+            TCC_DEBUG(logKey, "QN: {}", String(qn));
+            return qn;
         }
         TCC_DEBUG(logKey, "Name: {}", name.getAsString());
         logKey += name.getAsString();
@@ -340,20 +350,21 @@ namespace tcc {
         auto const *fn = getContainerFunctionDecl(context, vd);
         if(!fn) {
             TCC_DEBUG(logKey, "Container function is null");
-            return TCCKey {name.getAsString(), "::"};
+            auto qn = TCCKey(name.getAsString(), "::");
+            TCC_DEBUG(logKey, "QN: {}", String(qn));
+            return qn;
         }
 
         if(auto parmIndex = getParameterIndex(*fn, name)) {
             auto qn = qualifiedNameForParm(context, *fn, *parmIndex);
-            TCC_DEBUG(logKey, "parmIndex: {}; {}", parmIndex.value(), String(qn));
+            TCC_DEBUG(logKey, "parmIndex: {}; QN: {}", parmIndex.value(), String(qn));
             return qn;
         }
 
         TCC_DEBUG(logKey, "parmIndex is nullopt (identifier is not a parm)");
-        return TCCKey {
-            name.getAsString(),
-            getContainerFunction(context, vd)
-        };
+        auto qn = TCCKey(name.getAsString(), getContainerFunction(context, vd));
+        TCC_DEBUG(logKey, "QN: {}", String(qn));
+        return qn;
     }
 
     auto qualifiedNameValueDecl(ASTContext &context,
@@ -374,7 +385,9 @@ namespace tcc {
         auto const *dre = getChild<DeclRefExpr>(e);
         if(!dre) {
             TCC_DEBUG(logKey, "No DRE in expression, stringifying expr for qn");
-            return TCCKey{"#tcck(" + String(context, e) + ")"};
+            auto qn = TCCKey{"#lit/" + String(context, e) + "/"};
+            TCC_DEBUG(logKey, "QN: {}", String(qn));
+            return qn;
         }
 
         TCC_DEBUG(logKey, "DRE in expression: {}", String(context, *dre));
@@ -385,28 +398,55 @@ namespace tcc {
             if(vd->isFunctionPointerType() || vd->isFunctionOrFunctionTemplate()) {
                 TCC_DEBUG(logKey, "DRE is fptr type: {}", String(context, *dre));
                 // Any operation on function/fptr are non-type changing => qualified name of dre suffices
-                return qualifiedNameDRE(context, *dre);
+                auto qn = qualifiedNameDRE(context, *dre);
+                TCC_DEBUG(logKey, "QN: {}", String(qn));
+                return qn;
             }
             TCC_DEBUG(logKey, "DRE is not fptr type: {}", String(context, *dre));
         }
 
         //TCC_DEBUG(logKey, "No decl in dre: {}", String(context, *dre));
-        auto dreKey = qualifiedNameDRE(context, *dre);
-        auto dreQn = dreKey.id(); //String(dreKey);
-        auto dreStr = String(context, *dre);
-        TCC_DEBUG(logKey, "DRE: qn({}); str({})", dreQn, dreStr);
-        // replace dre name in expr string with dreqn
+        auto refKey = qualifiedNameDRE(context, *dre);
+        auto refId = refKey.id(); //String(dreKey);
+        auto refStr = String(context, *dre);
+        TCC_DEBUG(logKey, "Reference (dre): id({}); str({})", refId, refStr);
+        // replace dre name in expr string with refId
         auto expr = String(context, e);
-        if(auto pos = expr.find(dreStr); pos != std::string::npos) {
-            TCC_DEBUG(logKey, "Found identifier '{}' in expr", dreStr);
-            expr.replace(pos, dreStr.size(), dreQn);
-            TCC_DEBUG(logKey, "Replaced identifier '{}' with qn '{}'", dreStr, dreQn);
+        auto const *expr_ = e.IgnoreParenCasts();
+        auto expr2 = String(context, *expr_);
+        bool shouldAppendExpr = false;
+        if(auto pos = expr.find(refStr); pos != std::string::npos) {
+            TCC_DEBUG(logKey, "Found identifier '{}' in expr", refStr);
+            //if(refStr != refId) {
+            //if(expr != refStr
+            //        || e.getType() != dre->getType() ) {
+            if(e.getType()->getCanonicalTypeInternal() != dre->getType()->getCanonicalTypeInternal()) {
+                // filter out simple ref exprs: e.g. i in `j = i`;
+                TCC_DEBUG(logKey, "Expr type: '{}' v/s dre type: '{}'", Typename(context, e), Typename(context, *dre));
+                TCC_DEBUG(logKey, "Expr2 type: '{}' v/s expr type: '{}' v/s dre type: '{}'",
+                        Typename(context, *expr_), Typename(context, e), Typename(context, *dre));
+                shouldAppendExpr = true;
+            }
+            //expr.replace(pos, refStr.size(), refId);
+            // remove dre part
+            //expr = expr.substr(0, pos) + expr.substr(pos + dreStr.size());
+        }
+
+        if(!shouldAppendExpr) {
+            TCC_DEBUG(logKey, "Expr: '{}'", expr);
+            TCCKey ek{
+                refId,
+                refKey.prefix(), //getContainerFunction(context, e)
+            };
+            TCC_DEBUG(logKey, "QN: {}", String(ek));
+            return ek;
         }
 
         TCC_DEBUG(logKey, "Expr: '{}'", expr);
         TCCKey ek{
+            refId,
+            refKey.prefix(), //getContainerFunction(context, e)
             expr,
-            dreKey.prefix(), //getContainerFunction(context, e)
         };
         TCC_DEBUG(logKey, "QN: {}", String(ek));
         return ek;
@@ -426,7 +466,6 @@ namespace tcc {
             }
         }
 
-
         if(auto const *decl = dre.getFoundDecl()) {
             TCC_DEBUG(logKey, "Found decl from dre: {}", String(context, *decl));
             if(auto const *vd = dyn_cast<VarDecl>(decl)) {
@@ -440,7 +479,7 @@ namespace tcc {
                     String(context, *decl),
                     getContainerFunction(context, *decl)
                 };
-                TCC_DEBUG(logKey, "DRE decl is a function type; qn = fn-name({})", String(qn));
+                TCC_DEBUG(logKey, "DRE decl is a function type; qn = fn-name = '{}'", String(qn));
                 return qn;
             }
 
@@ -449,7 +488,7 @@ namespace tcc {
                 String(context, dre),
                 getContainerFunction(context, *decl)
             };
-            TCC_WARN(logKey, "Stringified qn: {}", String(qn));
+            TCC_WARN(logKey, "Stringified qn: '{}'", String(qn));
             return qn;
         }
 
@@ -458,15 +497,15 @@ namespace tcc {
                 String(context, dre),
                 getContainerFunction(context, *stmt)
             };
-            TCC_DEBUG(logKey, "DRE is a stmt without decl, stringifying dre; qn = {}", String(qn));
+            TCC_DEBUG(logKey, "DRE is a stmt without decl, stringifying dre; qn = '{}'", String(qn));
             return qn;
         }
 
         auto errQn = TCCKey {
-            "#tcckerr(" + String(context, dre) + ")",
+            "~dre~err(" + String(context, dre) + ")",
             getContainerFunction(context, dre)
         };
-        TCC_ERROR(logKey, "DRE does not have any valid decl or stmt! qn = {}", String(errQn));
+        TCC_ERROR(logKey, "DRE does not have any valid decl or stmt! qn = '{}'", String(errQn));
         return errQn;
     }
 
@@ -482,6 +521,14 @@ namespace tcc {
 
         if(auto const *fptr = getFptrFromFptrCall(context, call)) {
             TCC_DEBUG(logKey, "Found fptr from callexpr: {}", String(context, *fptr));
+            auto dreqn = qualifiedNameDRE(context, *fptr);
+            TCC_DEBUG(logKey, "Fptr qn: {}", String(dreqn));
+            auto dreid = dreqn.id();
+            TCCKey ek {
+                "$" + std::to_string(paramPos),
+                String(dreqn)
+            };
+            /*
             auto qn1 = TCCKey {
                 "$" + std::to_string(paramPos),
                 getContainerFunction(context, *fptr) + "." + String(context, *fptr)
@@ -494,6 +541,9 @@ namespace tcc {
             TCC_DEBUG(logKey, "qn1 = {}", String(qn1));
             TCC_DEBUG(logKey, "qn2 = {}", String(qn2));
             return qn2;
+            */
+            TCC_DEBUG(logKey, "Fptr parm qn = '{}'", String(ek));
+            return ek;
         }
 
         TCC_DEBUG(logKey, "No fptr in call expr, using callee expr");
@@ -505,7 +555,7 @@ namespace tcc {
                 "$" + std::to_string(paramPos),
                 String(context, *fn)
             };
-            TCC_DEBUG(logKey, "qn = {}", String(qn));
+            TCC_DEBUG(logKey, "qn = '{}'", String(qn));
             return qn;
         }
 
@@ -514,7 +564,7 @@ namespace tcc {
             String(context, call),
             getContainerFunction(context, call)
         };
-        TCC_DEBUG(logKey, "qn = {}", String(qn));
+        TCC_DEBUG(logKey, "qn = '{}'", String(qn));
         return qn;
     }
     // END FIX
@@ -523,7 +573,9 @@ namespace tcc {
             ParmVarDecl const &param)
         -> TCCNode {
 
-        TCC_DEBUG(String(context, param), "Building TCCNode for ParmVarDecl type: {}",
+        auto const logKey = String(context, param);
+        TCC_DEBUG_FN(logKey);
+        TCC_DEBUG(logKey, "Building TCCNode for ParmVarDecl type: {}",
                 Typename(context, param));
 
         return {
@@ -543,6 +595,7 @@ namespace tcc {
         -> TCCNode {
 
         auto const logKey = String(context, call) + "@" + std::to_string(paramPos);
+        TCC_DEBUG_FN(logKey);
         TCC_DEBUG(logKey, "Building TCCNode for maybe fptr call's parameter");
 
         return TCCNode {
@@ -562,6 +615,7 @@ namespace tcc {
         -> TCCNode {
 
         auto const logKey = String(context, call) + "@" + std::to_string(paramPos);
+        TCC_DEBUG_FN(logKey);
         TCC_DEBUG(logKey, "Building TCCNode for Call Param (index: {})", paramPos);
 
         auto const *param = getParamDecl(context, call, paramPos);
@@ -580,7 +634,7 @@ namespace tcc {
         TCC_DEBUG(logKey, "Callee in call is also nullptr");
         return TCCNode {
             {},
-            TCCKey {std::to_string(paramPos), "ERR:ResolveFunctionFromCallexpr_.$"},
+            TCCKey {std::to_string(paramPos), "~param~ERR:ResolveFunctionFromCallexpr_.$"},
             String(context, call) + ".$" + std::to_string(paramPos),
             "", //Typename(context, *arg),
             "", //TypeCategory(context, *arg),
@@ -593,7 +647,9 @@ namespace tcc {
             VarDecl const &var)
         -> TCCNode {
 
-        TCC_DEBUG(String(context, var), "Building TCCNode for VarDecl type: {}",
+        auto logKey = String(context, var);
+        TCC_DEBUG_FN(logKey);
+        TCC_DEBUG(logKey, "Building TCCNode for VarDecl type: {}",
                 Typename(context, var));
         return {
             {&context, &var},
@@ -606,7 +662,8 @@ namespace tcc {
         };
     }
 
-    auto makeTCCNodeForVarDecl(ASTContext &context,
+    /*
+    auto makeTCCNodeForValueDecl(ASTContext &context,
             ValueDecl const &vald)
         -> TCCNode {
 
@@ -623,13 +680,16 @@ namespace tcc {
             makeTypeMetadata(context, vald)
         };
     }
+    */
 
     auto makeTCCNodeForDREDecl(ASTContext &context,
             DeclRefExpr const &dre,
             ValueDecl const &decl)
         -> TCCNode {
 
-        TCC_DEBUG(String(context, dre), "Building TCCNode for Valuedecl type: {}",
+        auto logKey = String(context, decl);
+        TCC_DEBUG_FN(logKey);
+        TCC_DEBUG(logKey, "Building TCCNode for Valuedecl type: {}",
                 Typename(context, decl));
 
         return {
@@ -650,6 +710,7 @@ namespace tcc {
         -> TCCNode {
 
         auto const logKey = String(context, originalExpr);
+        TCC_DEBUG_FN(logKey);
         TCC_DEBUG(logKey, "Building TCCNode for DRE in expr with type: {}",
                 Typename(context, originalExpr));
 
@@ -891,7 +952,6 @@ namespace tcc {
                 nodes_.insert({key, val});
             }
         }
-
 
         void update(TCCNode &&n) {
             // log difference and update vs create version?

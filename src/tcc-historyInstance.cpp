@@ -15,7 +15,7 @@
 #include <string>
 #include <numeric>
 
-//export module tcc:casts;
+//export module tcc:historyinstance;
 
 //import :tccnode;
 
@@ -59,7 +59,7 @@ namespace tcc {
     // Return string because TCCKey should not be created here.
     using ExtendedCastContext = std::vector<CastContext>;
     auto String(ExtendedCastContext const &ecc) -> std::string {
-        return "ecc:(Kind: extended);[" + std::to_string(ecc.size()) + "]";
+        return "ecc:{kind: extended, size: " + std::to_string(ecc.size()) + "}";
     }
 
     auto derefIdFromContext(ExtendedCastContext ecc, TCCKey id) -> std::string {
@@ -162,8 +162,12 @@ namespace tcc {
             return substitution_.context();
         }
 
-        auto resolution(TCCStore const &tdb) -> KeyRef {
+        auto resolution(TCCStore const &tdb) const -> KeyRef {
             return substitution_.child(tdb);
+        }
+
+        auto substitution(TCCStore const &tdb) const -> TypeProvenanceConstraint {
+            return substitution_.get(tdb);
         }
 
         auto ref() const -> CastHistory const* {
@@ -177,7 +181,7 @@ namespace tcc {
     private:
         KeyRef id_; // get type_ from metadata
         CastHistory const *history_; // original history template
-        TypeProvenanceSubstitution substitution_;
+        mutable TypeProvenanceSubstitution substitution_;
 
         // CHI is recursive and must store adjacent vertices/edges
         std::vector<CastHistoryInstance> nexts_;
@@ -194,29 +198,72 @@ namespace tcc {
         return CastHistoryInstance(&(tdb.getHistory(leaf)), std::move(cs));
     }
 
+    std::size_t nbSpace = 0;
     auto String(TCCStore const &tdb,
             CastHistoryInstance const &hi)
         -> std::string {
 
 
         auto const &id = hi.id();
+        auto const &next = hi.resolution(tdb);
         auto const &node = tdb.getNode(id);
-        auto history = node.type_ + "(" + node.id() + ")";
+
+        auto indent = std::string(nbSpace, '|');
+        std::string history;
+        history.reserve(256);
+        //// TODO TODO: Add context number in instantiation so that the common one can be filtered out
+        //for(auto const &cc: hi.context()) {
+        //history += indent;
+        if(hi.context().size() > 0) {
+            auto cc = hi.context().front();
+            if(cc.kind() == CastContext::Kind::Unknown) {
+                history += "[CC{~Unknown~}](";
+                //continue;
+            }
+            else {
+                history += "[CC{id: '" + cc.id()
+                    + "', kind: '" + String(cc.kind())
+                    + "', scope: '" + cc.scope() + "'}](";
+            }
+        }
+        history += node.type_;
+        if(id != next) {
+            history += "(" + next + ") via <" + node.id() + ">";
+        }
+        else {
+            history += "(" + next + ")";
+        }
         if(hi.nexts().empty()) {
+            history += ")";
+            //history += "\n" + std::string(nbSpace, ' ') + ")";
+            //history += "\n" + indent + ")";
+            //nbSpace -= (nbSpace > 0) ? 2 : 0;
             return history;
         }
 
-        history += " => [";
+        history += "\n" + indent + "=> {\n";
+        nbSpace += 2;
+        //history += " =>〈";
+        auto toReplace = false;
         for(auto const &next: hi.nexts()) {
-            history += String(tdb, next);
-            history += ",";
+            history += "+" + std::string(nbSpace + 1, '-') + String(tdb, next);
+            history += ",\n"; // + std::string(nbSpace, ' ');
+            toReplace = true;
         }
-        if(history.back() == ',') {
-            history.back() = ']';
+        //if(history.back() == ',') {
+        if(toReplace) {
+            indent = std::string(nbSpace, ' ');
+            std::string replacing = ",\n"; // + indent;
+            history.replace(history.length() - replacing.length(), 2, "})");
+            //history.back() = '}';
+            //history.replace(history.length() - 1, std::strlen("〉"), "〉");
         }
         else {
-            history += "]";
+            history += "})";
+            //history += "〉";
         }
+        nbSpace -= (nbSpace > 0) ? 2 : 0;
+        //history += ")";
         return history;
     }
 
@@ -236,18 +283,23 @@ namespace tcc {
         std::unordered_map<std::string, bool> seen;
 
         // 1. make global context stack that changes with dfs
-        auto instanceContext = [gcc]() mutable -> ExtendedCastContext {
-            ExtendedCastContext gccv;
-            gccv.reserve(gcc.size());
+        auto instanceContext = [&gcc_=gcc]() -> ExtendedCastContext {
+            auto gcc = gcc_;
+            TCC_DEBUG("instanceContext", "Current context stack size: {}", gcc.size());
+            ExtendedCastContext ecc;
+            ecc.reserve(gcc.size());
             while(!gcc.empty()) {
-                gccv.push_back(gcc.top());
+                ecc.push_back(gcc.top());
                 gcc.pop();
             }
-            return gccv;
+            TCC_DEBUG("instanceContext", "Created context: {}", String(ecc));
+            return ecc;
         };
 
         auto instantiateAndPop = [&]() {
-            auto &&[constraint, _, children] = stack.top();
+            auto &&frame = stack.top();
+            auto &[constraint, _, children] = frame;
+            //auto &&[constraint, _, children] = stack.top();
             auto leafKey = constraint.child();
             auto tops = String(constraint);
 
@@ -262,6 +314,18 @@ namespace tcc {
             auto next = instance.resolution(tdb);
             TCC_DEBUG(logKey, "(pop)[Top= {}] | instance resolution: {}", tops, next);
             llvm::outs() << "(pop) next |" << next << "\n";
+            /*
+            if(next != leafKey) {
+                // destroy moved frame
+                if(!stack.empty()) {
+                    stack.pop();
+                }
+                stack.push(frame);
+                stack.push(Frame(instance.substitution(tdb), 0, {}));
+                gcc.push({});
+                return;
+            }
+            */
 
             TCC_DEBUG(logKey, "(pop)[Top= {}] instance: {} | Appending [{}] children",
                     tops, instance.id(), children.size());
@@ -308,8 +372,10 @@ namespace tcc {
 
         // push root to stack
         TCC_DEBUG(logKey, "Pushing starter: {} => {}", h.id(), h.id());
-        Frame init(TypeProvenanceConstraint({"<Dummy>", h.id()}));
+        TypeProvenanceConstraint starter({"<Dummy>", h.id()});
+        Frame init(starter);
         stack.push(init);
+        gcc.push({});
 
         llvm::outs() << "[Instantiation] id | " << h.id() << "\n";
 
@@ -353,6 +419,9 @@ namespace tcc {
                 llvm::outs() << "(stack) next = " << String(nextTop) << "\n";
                 if(!seen[String(nextTop)]) {
                     stack.push({nextTop, 0, {}});
+                    auto const &[newTop, _, __] = stack.top();
+                    //TCC_DEBUG(logKey, "(stack)[Top= {}] Updated stack", String(newTop));
+                    TCC_DEBUG(logKey, "(stack)[Top= {}] Updating context stack with '{}'", strTop, String(newTop.context()));
                     gcc.push(nextTop.context());
                 }
             }

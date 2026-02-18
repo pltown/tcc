@@ -57,7 +57,7 @@ static void logUpdate(TCCNodesDB const &db,
     auto const &rs = db.get(src);
     auto const &rd = db.get(dest);
 
-    TCC_DEBUG("CensusUpdate", "[{} => {}] ({} => {})",
+    TCC_DEBUG("CensusUpdate", "[{} => {}] <full:{} => {}>",
             src, dest, String(rs), String(rd));
 }
 
@@ -98,7 +98,7 @@ namespace tcc {
             context_(*context) {}
 
         auto shouldVisitImplicitCode() const  -> bool {
-            return true;
+            return false;
         }
 
         // visit todo
@@ -106,16 +106,21 @@ namespace tcc {
         // decl, vardecl, etc
         // struct definition, union definion: maybe not
 
+        auto VisitVarDecl(VarDecl *vd) -> bool;
         auto VisitBinaryOperator(BinaryOperator *bop) -> bool;
-        void VisitAssignment(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
+        void handleBinaryAssignment(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
+        void handleBinaryArithmetic(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
+        void trackAssignment(TCCNode &&src, TCCNode &&dest);
         //
         auto VisitCallExpr(CallExpr const *call) -> bool;
+        void handleFptrCall(CallExpr const *call, DeclRefExpr const *fptr);
+        void handleFunctionCall(CallExpr const *call, FunctionDecl const *fn);
         auto VisitCastExpr(CastExpr const *cast) -> bool;
         //
         auto VisitMemberExpr(MemberExpr *mex) -> bool;
         auto VisitUnaryOperator(UnaryOperator *uop) -> bool;
-        void VisitUnaryAddressOf(UnaryOperator const *uop, Expr const *e);
-        void VisitUnaryDeref(UnaryOperator const *uop, Expr const *e);
+        void handleUnaryAddressOf(UnaryOperator const *uop, Expr const *e);
+        void handleUnaryDeref(UnaryOperator const *uop, Expr const *e);
 
         // Declaration->dump(): dumping ast nodes will show which nodes are already being visited
         auto results() -> TCCCollection {
@@ -183,9 +188,23 @@ auto isPointerArithmeticOperation(BinaryOperator const &bop) -> bool {
     return false;
 }
 
+auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
+    auto const logKey = String(context_, *vd);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *vd) + ">");
+
+    if(vd->hasInit()) {
+        auto const *init = vd->getInit();
+        auto src = makeTCCNodeForExpr(context_, *init);
+        auto dest = makeTCCNodeForVarDecl(context_, *vd);
+        trackAssignment(std::move(src), std::move(dest));
+    }
+
+    return true;
+}
+
 auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     auto const logKey = String(context_, *bop);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
 
 
     //auto const *rhs = getChildFromSub<DeclRefExpr>(bop->getRHS());
@@ -208,7 +227,10 @@ auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     //}
 
     if(bop->isAssignmentOp()) {
-        VisitAssignment(bop, bop->getLHS(), bop->getRHS());
+        handleBinaryAssignment(bop, bop->getLHS(), bop->getRHS());
+    }
+    else if(bop->isMultiplicativeOp() || bop->isAdditiveOp()) {
+        handleBinaryArithmetic(bop, bop->getLHS(), bop->getRHS());
     }
 
     /*
@@ -216,10 +238,6 @@ auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     if(bop->isPtrMemOp()) {
         // C++ not C
         VisitMemberPointer(bop, bop->getLHS(), bop->getRHS());
-    }
-    else if(bop->isMultiplicativeOp() || bop->isAdditiveOp()) {
-        type = "Arithmetic";
-        // TODO Pointer arithmetic?
     }
     else if(bop->isShiftOp()) {
         type = "Shift";
@@ -256,11 +274,11 @@ void TCCCensusVisitor::VisitMemberPointer(BinaryOperator const *bop,
 }
 */
 
-void TCCCensusVisitor::VisitAssignment(BinaryOperator const *bop,
+void TCCCensusVisitor::handleBinaryAssignment(BinaryOperator const *bop,
         Expr const *lhs,
         Expr const *rhs) {
     auto const logKey = String(context_, *bop);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
 
     auto const *ldre = getChildFromSub<DeclRefExpr>(lhs);
     if(!ldre) {
@@ -268,80 +286,187 @@ void TCCCensusVisitor::VisitAssignment(BinaryOperator const *bop,
         return;
     }
 
-    auto src = db_.add(makeTCCNodeForExpr(context_, *rhs));
-    auto dest = db_.add(makeTCCNodeForBinarySubExpr(context_, *ldre, sourceLocation(*lhs)));
-    logUpdate(db_, src, dest);
+    auto src = makeTCCNodeForExpr(context_, *rhs);
+    auto dest = makeTCCNodeForBinarySubExpr(context_, *ldre, sourceLocation(*lhs));
+    trackAssignment(std::move(src), std::move(dest));
+}
 
-    auto scope = db_.getTCCKey(dest).prefix();
+void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
+        Expr const *lhs,
+        Expr const *rhs) {
+    auto const logKey = String(context_, *bop);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
+
+    // TODO Check if array 
+    auto isLptr = lhs->getType()->isPointerType();
+    auto isRptr = rhs->getType()->isPointerType();
+    if(!isLptr && !isRptr) {
+        TCC_DEBUG(logKey, "Skipping: no pointer in either lhs({}) or rhs({})",
+                String(context_, *lhs), String(context_, *rhs));
+        return;
+    }
+
+    auto const *ldre = getChildFromSub<DeclRefExpr>(lhs);
+    auto const *rdre = getChildFromSub<DeclRefExpr>(rhs);
+    if(!ldre && !rdre) {
+        TCC_DEBUG(logKey, "Skipping: no dre in either lhs({}) or rhs({})",
+                String(context_, *lhs), String(context_, *rhs));
+        return;
+    }
+
+    auto dreToBinaryOp = [&](auto const &dre) {
+        // Use expr instead of dre (expr => bop) as visit expr will take care of dre => expr
+        auto src = db_.add(makeTCCNodeForExpr(context_, *dre));
+        auto dest = db_.add(makeTCCNodeForExpr(context_, *bop));
+        logUpdate(db_, src, dest);
+
+        auto label = std::string(bop->getOpcodeStr()) + "(" + src + ")";
+        auto scope = db_.getTCCKey(dest).prefix();
+        CastContext cc(CastContext::Kind::PointerArithmetic, label, scope);
+        append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+        append(hdb_, dest);
+    };
+
+    // If two ptrs are involved, both ptrs' histories involve bop
+    if(isLptr && ldre) {
+        dreToBinaryOp(lhs);
+    }
+    if(isRptr && rdre) {
+        dreToBinaryOp(rhs);
+    }
+}
+
+void TCCCensusVisitor::trackAssignment(TCCNode &&srcN,
+        TCCNode &&destN) {
+    auto const logKey = srcN.id() + "->" + destN.id();
+
+    auto scope = destN.key().prefix();
     auto ck = CastContext::Kind::Assignment;
-    if(auto const &sn = db_.get(src); sn.tmd_.fptrType_) {
+    if(srcN.tmd_.fptrType_) {
         ck = CastContext::Kind::FptrAssignment;
     }
+    auto src = db_.add(std::move(srcN));
+    auto dest = db_.add(std::move(destN));
     CastContext cc(ck, src + "->" + dest, scope);
-    TCC_DEBUG(logKey, "({}) Adding to call context: ({} = {})", String(ck), dest, src);
+    TCC_DEBUG(logKey, "({}) Adding to tcc context: ({} = {})",
+            String(ck), dest, src);
     cc.insert(dest, src);
 
+    logUpdate(db_, src, dest);
     append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
     append(hdb_, dest);
 }
 
 auto TCCCensusVisitor::VisitCallExpr(CallExpr const *call) -> bool {
     auto const logKey = String(context_, *call);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *call) + ">");
+
+    std::unordered_map<std::string, TCCNode::KeyRef> argHistories;
+    auto processArg = [&](Expr const &arg,
+            CastContext &cc,
+            std::size_t pos) {
+        TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, arg));
+        auto src = db_.add(makeTCCNodeForExpr(context_, arg));
+        auto dest = db_.add(makeTCCNodeForParamFromCall(context_, *call, pos));
+
+        auto keySrc = db_.getTCCKey(src);
+        auto keyDest = db_.getTCCKey(dest);
+        if(keyDest.prefix() != keySrc.prefix()
+                && keyDest.prefix().find_last_of(".") == std::string::npos) {
+            TCC_DEBUG(logKey, "[cc.size() = {}] Adding: ({} = {})", cc.size(), dest, src);
+            cc.insert(dest, src);
+            TCC_DEBUG(logKey, "[cc.size() = {}]", cc.size());
+        }
+
+        argHistories[src] = dest;
+    };
 
     auto const *fn = getCalleeDecl(context_, *call);
     if(!fn) {
-        TCC_ERROR(logKey, "Cannot get function decl from callexpr");
+        TCC_DEBUG(logKey, "Cannot get function decl from callexpr; checking for fptr decl");
+        // likely a fptr that is unresolved at the moment
+        // TODO: // fptr(args...) --> <fptr-qn>(<argqn>..)
+        if(auto const *fptrDRE = getFptrFromFptrCall(context_, *call)) {
+            TCC_DEBUG(logKey, "Found fptr decl for callee");
+            //handleFptrCall(call, fptrDRE);
+            auto fname = String(context_, *fptrDRE);
+            CastContext cc(CastContext::Kind::FptrCall, String(context_, *call), fname);
+            std::size_t pos = 0;
+            std::for_each(call->arg_begin(), call->arg_end(),
+                [&](auto const *arg) {
+                    processArg(*arg, cc, pos++);
+                });
+            for(auto const &[src, dest]: argHistories) {
+                logUpdate(db_, src, dest);
+                append(hdb_, src, TypeProvenanceConstraint({src, dest}, cc));
+                append(hdb_, dest);
+            }
+        }
+        else {
+            TCC_ERROR(logKey, "Skipping: callee function or fptr decl not found");
+        }
         return true;
     }
 
     if(fn->getBuiltinID()) {
-        TCC_DEBUG(logKey, "Skipping builtin function call: {}", String(context_, *call));
+        TCC_DEBUG(logKey, "Skipping: builtin function");
         return true;
     }
+    else {
+        //handleFunctionCall(call, fn);
+        auto fname = String(context_, *fn);
+        CastContext cc(CastContext::Kind::FunctionCall, String(context_, *call), fname);
 
-    auto fname = String(context_, *fn);
-    CastContext cc(CastContext::Kind::FunctionCall, String(context_, *call), fname);
-    std::size_t pos = 0;
-    std::unordered_map<std::string, TCCNode::KeyRef> argHistories;
+        std::size_t pos = 0;
+        std::for_each(call->arg_begin(), call->arg_end(),
+            [&](auto const *arg) {
+                processArg(*arg, cc, pos++);
+            /*
+                TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, *arg));
+                auto src = db_.add(makeTCCNodeForExpr(context_, *arg));
+                //auto src = db_.add(makeTCCNodeForCallArg(context_, *call, *arg));
+                auto dest = db_.add(makeTCCNodeForParamFromCall(context_, *call, pos++));
 
-    std::for_each(call->arg_begin(), call->arg_end(),
-        [&](auto const *arg) {
-            TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, *arg));
-            auto src = db_.add(makeTCCNodeForExpr(context_, *arg));
-            //auto src = db_.add(makeTCCNodeForCallArg(context_, *call, *arg));
-            auto dest = db_.add(makeTCCNodeForParamFromCall(context_, *call, pos++));
+                auto sk = db_.getTCCKey(src);
+                auto dk = db_.getTCCKey(dest);
+                // To get to hof.$1.$0 = f.$0, avoid:
+                // 1. (destk.prefix == srck.prefix => Links params: hof.$1.$0 = hof.$0
+                // 2. (destk.prefix.find_last_of(".") => hof.$1.$0 = hof.var
+                if(dk.prefix() != sk.prefix()
+                        && dk.prefix().find_last_of(".") == std::string::npos) {
+                    TCC_DEBUG(logKey, "[cc.size() = {}] Adding: ({} = {})",
+                            cc.size(), dest, src);
+                    cc.insert(dest, src);
+                    TCC_DEBUG(logKey, "[cc.size() = {}]", cc.size());
+                }
 
-            auto sk = db_.getTCCKey(src);
-            auto dk = db_.getTCCKey(dest);
-            // To get to hof.$1.$0 = f.$0, avoid:
-            // 1. (destk.prefix == srck.prefix => Links params: hof.$1.$0 = hof.$0
-            // 2. (destk.prefix.find_last_of(".") => hof.$1.$0 = hof.var
-            if(dk.prefix() != sk.prefix()
-                    && dk.prefix().find_last_of(".") == std::string::npos) {
-                TCC_DEBUG(logKey, "Adding to call context: ({} = {})", dest, src);
-                cc.insert(dest, src);
-            }
-
-            argHistories[src] = dest;
-        });
-
-    for(auto const &[src, dest]: argHistories) {
-        logUpdate(db_, src, dest);
-        append(hdb_, src, TypeProvenanceConstraint({src, dest}, cc));
-        append(hdb_, dest);
+                argHistories[src] = dest;
+            */
+            });
+        for(auto const &[src, dest]: argHistories) {
+            logUpdate(db_, src, dest);
+            append(hdb_, src, TypeProvenanceConstraint({src, dest}, cc));
+            append(hdb_, dest);
+        }
     }
 
     return true;
 }
 
+void TCCCensusVisitor::handleFptrCall(CallExpr const *call, DeclRefExpr const *fptr) {
+    //fname = qualifiedNameDRE(context_, *fptrDRE);
+}
+
+void TCCCensusVisitor::handleFunctionCall(CallExpr const *call, FunctionDecl const *fn) {
+}
+
 auto TCCCensusVisitor::VisitCastExpr(CastExpr const *cast) -> bool {
     auto const logKey = String(context_, *cast);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *cast) + ">");
 
     auto src = db_.add(makeTCCNodeForExpr(context_, *(cast->getSubExpr())));
     auto dest = db_.add(makeTCCNodeForExpr(context_, *cast));
-    if(src == dest) {
+    if(src == dest && cast->getCastKind() != CK_BitCast) {
         TCC_DEBUG(logKey, "Skipping self-provenance in cast visit for cast kind: {}",
                 CastExpr::getCastKindName(cast->getCastKind()));
         return true;
@@ -399,7 +524,7 @@ auto TCCCensusVisitor::VisitCastExpr(CastExpr const *cast) -> bool {
 //
 auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     auto const logKey = String(context_, *mex);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *mex) + ">");
 
     // unnamed member is seen as follows
     //  s->s_type | s => s_type
@@ -456,24 +581,24 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
 
 auto TCCCensusVisitor::VisitUnaryOperator(UnaryOperator *uop) -> bool {
     auto const logKey = String(context_, *uop);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *uop) + ">");
 
     auto op = UnaryOperator::getOpcodeStr(uop->getOpcode());
     if(op == "&") {
-        VisitUnaryAddressOf(uop, uop->getSubExpr());
+        handleUnaryAddressOf(uop, uop->getSubExpr());
         return true;
     }
     else if(op == "*") {
-        VisitUnaryDeref(uop, uop->getSubExpr());
+        handleUnaryDeref(uop, uop->getSubExpr());
         return true;
     }
 
    return VisitorBase::VisitUnaryOperator(uop);
 }
 
-void TCCCensusVisitor::VisitUnaryAddressOf(UnaryOperator const *uop, Expr const *e) {
+void TCCCensusVisitor::handleUnaryAddressOf(UnaryOperator const *uop, Expr const *e) {
     auto const logKey = String(context_, *e);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
 
     auto const *rhs = getChildFromSub<DeclRefExpr>(e);
     if(!rhs) {
@@ -492,9 +617,9 @@ void TCCCensusVisitor::VisitUnaryAddressOf(UnaryOperator const *uop, Expr const 
     append(hdb_, dest);
 }
 
-void TCCCensusVisitor::VisitUnaryDeref(UnaryOperator const *uop, Expr const *e) {
+void TCCCensusVisitor::handleUnaryDeref(UnaryOperator const *uop, Expr const *e) {
     auto const logKey = String(context_, *e);
-    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
 
     auto const *rhs = getChildFromSub<DeclRefExpr>(e);
     if(!rhs) {
