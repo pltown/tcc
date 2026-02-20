@@ -41,6 +41,7 @@ using namespace clang::tooling;
 //
 
 using CastHistories = TCCStore::CastHistories;
+// TODO fix: should only take constraint and take key from constraint.dom
 static void append(CastHistories &archive,
         TCCNode::KeyRef const &key,
         std::optional<TypeProvenanceConstraint> constraint = {}) {
@@ -107,6 +108,8 @@ namespace tcc {
         // struct definition, union definion: maybe not
 
         auto VisitVarDecl(VarDecl *vd) -> bool;
+        auto VisitExpr(Expr *e) -> bool;
+        void trackSwitchCondition(Expr *e);
         auto VisitBinaryOperator(BinaryOperator *bop) -> bool;
         void handleBinaryAssignment(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
         void handleBinaryArithmetic(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
@@ -118,9 +121,13 @@ namespace tcc {
         auto VisitCastExpr(CastExpr const *cast) -> bool;
         //
         auto VisitMemberExpr(MemberExpr *mex) -> bool;
+        //void checkSwitchConditionForMember(MemberExpr *mex, DeclRefExpr const *dre, TCCNode const &dest);
+        auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
         auto VisitUnaryOperator(UnaryOperator *uop) -> bool;
         void handleUnaryAddressOf(UnaryOperator const *uop, Expr const *e);
         void handleUnaryDeref(UnaryOperator const *uop, Expr const *e);
+
+        // visit return statement may be needed to link conditional return on base ptr
 
         // Declaration->dump(): dumping ast nodes will show which nodes are already being visited
         auto results() -> TCCCollection {
@@ -200,6 +207,64 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     }
 
     return true;
+}
+
+auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
+    auto const logKey = String(context_, *e);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
+
+    /*
+    if(dyn_cast<SwitchStmt>(e)) {
+        return true;
+    }
+    if(dyn_cast<SwitchCase>(e)) {
+        return true;
+    }
+    */
+
+    //trackSwitchCondition(e);
+    return true;
+}
+
+void TCCCensusVisitor::trackSwitchCondition(Expr *e) {
+    auto const logKey = String(context_, *e);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
+
+    SwitchCase const *sc = nullptr;
+    auto parents = context_.getParents(*e);
+    while(parents.size() != 0
+        && parents[0].get<clang::SwitchStmt>() == nullptr) {
+
+        if(!sc && (sc = parents[0].get<clang::SwitchCase>())) {
+            TCC_DEBUG(logKey, "Found parent case: {}", String(context_, *sc));
+        }
+        parents = context_.getParents(parents[0]);
+    }
+
+    if(parents.size() == 0) {
+        TCC_DEBUG(logKey, "Skipping: no switch case found");
+        return;
+    }
+
+    if(!sc) {
+        TCC_DEBUG(logKey, "Skipping: no switch-case parent => No switch condition");
+        return;
+    }
+
+    auto const *st = parents[0].get<clang::SwitchStmt>();
+    if(!st) {
+        TCC_ERROR(logKey, "Skipping: cannot find parent switch after finding switch case");
+        return;
+    }
+
+    auto src = db_.add(makeTCCNodeForSwitchCase(context_, *st, *sc));
+    auto dest = db_.add(makeTCCNodeForExpr(context_, *e));
+
+    auto ck = CastContext::Kind::SwitchCase;
+    auto scope = db_.getTCCKey(dest).scope();
+    CastContext cc(ck, src, scope);
+    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+    append(hdb_, dest);
 }
 
 auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
@@ -321,7 +386,7 @@ void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
         logUpdate(db_, src, dest);
 
         auto label = std::string(bop->getOpcodeStr()) + "(" + src + ")";
-        auto scope = db_.getTCCKey(dest).prefix();
+        auto scope = db_.getTCCKey(dest).scope();
         CastContext cc(CastContext::Kind::PointerArithmetic, label, scope);
         append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
         append(hdb_, dest);
@@ -340,7 +405,7 @@ void TCCCensusVisitor::trackAssignment(TCCNode &&srcN,
         TCCNode &&destN) {
     auto const logKey = srcN.id() + "->" + destN.id();
 
-    auto scope = destN.key().prefix();
+    auto scope = destN.key().scope();
     auto ck = CastContext::Kind::Assignment;
     if(srcN.tmd_.fptrType_) {
         ck = CastContext::Kind::FptrAssignment;
@@ -503,7 +568,7 @@ auto TCCCensusVisitor::VisitCastExpr(CastExpr const *cast) -> bool {
             ccKind = CastContext::Kind::ImplicitCast; break;
     }
 
-    auto scope = db_.getTCCKey(dest).prefix();
+    auto scope = db_.getTCCKey(dest).scope();
     CastContext cc(ccKind, String(ccKind), scope);
 
     append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
@@ -549,6 +614,10 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     else if(auto const *dre = getChildFromSub<DeclRefExpr>(base)) {
         TCC_DEBUG(logKey, "Base dre: {}", String(context_, *dre));
         src = db_.add(makeTCCNodeForDRE(context_, *base, *dre));
+
+        // Additionally, this should be associated with the switch-case (if any) this expression is inside
+        //checkSwitchConditionForMember(mex, dre, src);
+        trackSwitchCondition(mex);
     }
     else {
         TCC_ERROR(logKey, "Skipping: cannot get member base decl");
@@ -566,15 +635,103 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
 
     CastContext::Kind ck = CastContext::Kind::MemberAccess;
     if(db_.isUnionType(src)) {
-        ck = CastContext::Kind::UnionMemberAccess;
-    }
-    else if(db_.isUnionType(dest)) {
         ck = CastContext::Kind::UnionMemberCast;
     }
-    CastContext cc(ck, String(ck), db_.getTCCKey(dest).prefix());
+    else if(db_.isUnionType(dest)) {
+        ck = CastContext::Kind::UnionMemberAccess;  // Nested union access
+    }
+    CastContext cc(ck, String(ck), db_.getTCCKey(dest).scope());
 
     append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
     append(hdb_, dest);
+
+    return true;
+}
+
+/*
+void TCCCensusVisitor::checkSwitchConditionForMember(MemberExpr *mex, DeclRefExpr const *dre, TCCNode const &dest) {
+    auto const logKey = String(context_, *mex);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *mex) + ">");
+
+    SwitchCase const *sc;
+    auto parents = context_.getParents(mex);
+    while(parents.size() != 0
+        && parents[0].get<clang::SwitchStmt>() == nullptr) {
+
+        if(!sc && (sc = parents[0].get<clang::SwitchCase>())) {
+            TCC_DEBUG(logKey, "Found parent case: {}", String(context_, *sc));
+        }
+        parents = context_.getParents(parents[0]);
+    }
+
+    if(!sc) {
+        TCC_DEBUG(logKey, "Skipping: no switch-case parent => No switch condition");
+        return;
+    }
+
+    auto const *st = parents[0].get<clang::SwitchStmt>();
+    if(!st) {
+        TCC_ERROR(logKey, "Skipping: cannot find parent switch after finding switch case");
+        return;
+    }
+
+    auto src = db_.add(makeTCCNodeForSwitchCase(context_, *st, *sc));
+
+    auto ck = CastContext::Kind::SwitchCase;
+    auto scope = db_.getTCCKey(dest).scope();
+    CastContext cc(ck, src, scope);
+    //append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+    append(hdb_, dest);
+}
+*/
+
+auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
+    auto const logKey = String(context_, *ss);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *ss) + ">");
+
+    auto const *cond = ss->getCond();
+    auto src = db_.add(makeTCCNodeForExpr(context_, *cond));
+    //auto dest = db_.add(makeTCCNodeForSwitchStmt(context_, *ss));
+    //auto ck = CastContext::Kind::SwitchCondition;
+    //auto label = String(context_, *cond);
+    //CastContext cc(ck, label, db_.getTCCKey(dest).scope());
+    //append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+    //append(hdb_, dest);
+
+    auto scl = ss->getSwitchCaseList();
+    while(scl) {
+        if(auto const *sc = dyn_cast<CaseStmt>(scl)) {
+            auto const *scase = sc->getLHS();
+            //auto dest = db_.add(makeTCCNodeForExpr(context_, *(sc->getSubStmt())));
+            auto ck = CastContext::Kind::SwitchCondition;
+            auto label = String(context_, *cond) + " == " + String(context_, *scase);
+            //if(auto const *sb = dyn_cast<Expr>(sc->getSubStmt())) {
+            //    auto dest = db_.add(makeTCCNodeForExpr(context_, *sb));
+            //    CastContext cc(ck, label, db_.getTCCKey(dest).scope());
+            //    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+            //    append(hdb_, dest);
+            //}
+            auto dest = db_.add(makeTCCNodeForSwitchCase(context_, *ss, *scl));
+            CastContext cc(ck, dest, db_.getTCCKey(dest).scope());
+            //CastContext cc(ck, label, db_.getTCCKey(dest).scope());
+            append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+            append(hdb_, dest);
+            /*
+            for(auto const *schild: sc->getSubStmt()->children()) {
+                if(auto const *se = dyn_cast<Expr>(schild)) {
+                    auto dest2 = db_.add(makeTCCNodeForExpr(context_, *se));
+                    CastContext cc(CastContext::Kind::SwitchCase, dest, db_.getTCCKey(dest2).scope());
+                    append(hdb_, dest, TypeProvenanceConstraint({dest, dest2}, std::move(cc)));
+                    append(hdb_, dest2);
+                }
+            }
+            */
+        }
+        else if(auto const *defc = dyn_cast<DefaultStmt>(scl)) {
+            // TODO
+        }
+        scl = scl->getNextSwitchCase();
+    }
 
     return true;
 }
@@ -611,7 +768,7 @@ void TCCCensusVisitor::handleUnaryAddressOf(UnaryOperator const *uop, Expr const
     auto dest = db_.add(makeTCCNodeForExpr(context_, *uop));
     logUpdate(db_, src, dest);
 
-    CastContext cc(CastContext::Kind::AddressOf, String(context_, *uop), db_.getTCCKey(dest).prefix());
+    CastContext cc(CastContext::Kind::AddressOf, String(context_, *uop), db_.getTCCKey(dest).scope());
 
     append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
     append(hdb_, dest);
@@ -632,7 +789,7 @@ void TCCCensusVisitor::handleUnaryDeref(UnaryOperator const *uop, Expr const *e)
     auto dest = db_.add(makeTCCNodeForExpr(context_, *uop));
     logUpdate(db_, src, dest);
 
-    CastContext cc(CastContext::Kind::Deref, String(context_, *uop), db_.getTCCKey(dest).prefix());
+    CastContext cc(CastContext::Kind::Deref, String(context_, *uop), db_.getTCCKey(dest).scope());
 
     append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
     append(hdb_, dest);

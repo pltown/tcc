@@ -214,6 +214,7 @@ namespace tcc {
         //// TODO TODO: Add context number in instantiation so that the common one can be filtered out
         //for(auto const &cc: hi.context()) {
         //history += indent;
+        /*
         if(hi.context().size() > 0) {
             auto cc = hi.context().front();
             if(cc.kind() == CastContext::Kind::Unknown) {
@@ -225,6 +226,11 @@ namespace tcc {
                     + "', kind: '" + String(cc.kind())
                     + "', scope: '" + cc.scope() + "'}](";
             }
+        }
+        */
+        if(hi.context().size() > 0) {
+            auto cc = hi.context().front();
+            history += "[cc: " + cc.id() + "]";
         }
         history += node.type_;
         if(id != next) {
@@ -305,7 +311,7 @@ namespace tcc {
 
             // instantiate history
             TCC_DEBUG(logKey, "(pop)[Top= {}]", tops);
-            llvm::outs() << "(pop)[Top= {" << tops << "}]\n";
+            //llvm::outs() << "(pop)[Top= {" << tops << "}]\n";
 
             // 2. instantiate using the context stack
             auto instance = makeCastHistoryInstance(tdb, instanceContext(), leafKey, constraint);
@@ -313,7 +319,7 @@ namespace tcc {
             // add to stack if not seen TODO (must be done before pop)
             auto next = instance.resolution(tdb);
             TCC_DEBUG(logKey, "(pop)[Top= {}] | instance resolution: {}", tops, next);
-            llvm::outs() << "(pop) next |" << next << "\n";
+            //llvm::outs() << "(pop) next |" << next << "\n";
             /*
             if(next != leafKey) {
                 // destroy moved frame
@@ -329,14 +335,14 @@ namespace tcc {
 
             TCC_DEBUG(logKey, "(pop)[Top= {}] instance: {} | Appending [{}] children",
                     tops, instance.id(), children.size());
-            llvm::outs() << "(pop) Appending built instances (" << children.size() << ")\n";
+            //llvm::outs() << "(pop) Appending built instances (" << children.size() << ")\n";
             // append all branch instances
             for(auto &&c: children) {
                 instance.append(std::move(c));
             }
 
             TCC_DEBUG(logKey, "(pop)[Top= {}] Destroying top frame", tops);
-            llvm::outs() << "(pop) Destroying top frame" << "\n";
+            //llvm::outs() << "(pop) Destroying top frame" << "\n";
             // mark this leaf for append in next pop
             //  i.e. append instance to parent after pop(at leaf) in case of branch (a => [b => c, d])
             if(!stack.empty()) {
@@ -347,19 +353,19 @@ namespace tcc {
                     gcc.pop();
                 }
                 TCC_DEBUG(logKey, "(pop)[Top= <unk>] Destroying top frame: {}", tops);
-                llvm::outs() << "(pop) Destroyed top frame" << "\n";
+                //llvm::outs() << "(pop) Destroyed top frame" << "\n";
             }
 
             if(!stack.empty()) {
                 tops = String(stack.top().constraint);
                 TCC_DEBUG(logKey, "(pop)[Top= {}] Adding instance of ({}) to top's next list",
                         tops, instance.id());
-                llvm::outs() << "(pop) Appending instance (" << instance.id() << ") to next children\n";
+                //llvm::outs() << "(pop) Appending instance (" << instance.id() << ") to next children\n";
                 stack.top().nexts.push_back(std::move(instance));
             }
             else {
                 TCC_DEBUG(logKey, "(pop)[Top= []] Finished stack, setting frame out: {}", instance.id());
-                llvm::outs() << "(pop) Finished stack, setting frame out:" << instance.id() << "\n";
+                //llvm::outs() << "(pop) Finished stack, setting frame out:" << instance.id() << "\n";
                 out = std::move(instance);
                 TCC_DEBUG(logKey, "(pop)[Top= []] Draining gcc stack");
                 while(!gcc.empty()) {
@@ -377,7 +383,7 @@ namespace tcc {
         stack.push(init);
         gcc.push({});
 
-        llvm::outs() << "[Instantiation] id | " << h.id() << "\n";
+        //llvm::outs() << "[Instantiation] id | " << h.id() << "\n";
 
         auto const &historyDB = tdb.hdb();
         while(!stack.empty()) {
@@ -385,14 +391,14 @@ namespace tcc {
             auto strTop = String(topConstraint);
             seen[strTop] = true;    // there may be duplicate constraints on same history
             TCC_DEBUG(logKey, "(stack)[Top= {}] Mark seen", strTop);
-            llvm::outs() << "(stack) seen = true | " << strTop << "\n";
+            //llvm::outs() << "(stack) seen = true | " << strTop << "\n";
 
             if(historyDB.find(topConstraint.child()) == std::end(historyDB)) {
                 // Should not happen; if constraint is created it should have a history
                 TCC_WARN(logKey, "(stack)[Top= {}] Skipping ({}); error: no history found for '{}'",
                         strTop, topConstraint.dom(), topConstraint.child());
-                llvm::errs() << "(stack) No history found for '" << topConstraint.child() << "'\n";
-                llvm::errs() << "(stack) Skipping probable leaf | " << strTop << "\n";
+                //llvm::errs() << "(stack) No history found for '" << topConstraint.child() << "'\n";
+                //llvm::errs() << "(stack) Skipping probable leaf | " << strTop << "\n";
 
                 //instantiateAndPop();
                 stack.pop();
@@ -407,16 +413,16 @@ namespace tcc {
             auto const &topHistory = tdb.getHistory(topConstraint.child());
             auto const &constraints = topHistory.constraints();
 
-            llvm::outs() << "(stack) top is " << strTop << "\n";
-            llvm::outs() << "(stack) pos = " << pos << "; topHistory.constraints.size() = " << constraints.size() << "\n";
+            //llvm::outs() << "(stack) top is " << strTop << "\n";
+            //llvm::outs() << "(stack) pos = " << pos << "; topHistory.constraints.size() = " << constraints.size() << "\n";
             TCC_DEBUG(logKey, "(stack)[Top= {}] pos={}; topHistory.constraints.size()={}",
                     strTop, pos, constraints.size());
             if(!constraints.empty() && pos < constraints.size()) {
                 auto const &nextTop = constraints[pos++];
                 TCC_DEBUG(logKey, "(stack)[Top= {}] Next({}): | pos={}; remaining={}",
                         strTop, String(nextTop), pos, constraints.size());
-                llvm::outs() << "(stack) pos = " << pos << "; remaining = " << constraints.size() << "\n";
-                llvm::outs() << "(stack) next = " << String(nextTop) << "\n";
+                //llvm::outs() << "(stack) pos = " << pos << "; remaining = " << constraints.size() << "\n";
+                //llvm::outs() << "(stack) next = " << String(nextTop) << "\n";
                 if(!seen[String(nextTop)]) {
                     stack.push({nextTop, 0, {}});
                     auto const &[newTop, _, __] = stack.top();
@@ -428,14 +434,14 @@ namespace tcc {
             else {
                 // reached leaf node
                 TCC_DEBUG(logKey, "(stack)[Top= {}] Leaf | topHistory.constraints.size() == pos == {}", strTop, pos);
-                llvm::outs() << "(stack) topHistory.constraints.size() == pos == " << pos << "\n";
-                llvm::outs() << "(stack) Instantiating leaf | " << strTop << "\n";
+                //llvm::outs() << "(stack) topHistory.constraints.size() == pos == " << pos << "\n";
+                //llvm::outs() << "(stack) Instantiating leaf | " << strTop << "\n";
                 instantiateAndPop();
             }
         }
 
         TCC_DEBUG(logKey, "Finished instantiation for: {}", h.id());
-        llvm::outs() << "(stack) Finished instantiation | " << h.id() << "\n";
+        //llvm::outs() << "(stack) Finished instantiation | " << h.id() << "\n";
 
         return out;
     }

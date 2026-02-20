@@ -93,6 +93,14 @@ namespace tcc {
             return ".__" + operation_ + "__." + container_;
         }
 
+        auto scope() const -> std::string {
+            return container_;
+        }
+
+        auto operation() const -> std::string {
+            return operation_;
+        }
+
         auto tail() const -> std::string {
             return "." + id_;
         }
@@ -436,7 +444,7 @@ namespace tcc {
             TCC_DEBUG(logKey, "Expr: '{}'", expr);
             TCCKey ek{
                 refId,
-                refKey.prefix(), //getContainerFunction(context, e)
+                refKey.scope(), //refKey.prefix(), //getContainerFunction(context, e)
             };
             TCC_DEBUG(logKey, "QN: {}", String(ek));
             return ek;
@@ -445,7 +453,7 @@ namespace tcc {
         TCC_DEBUG(logKey, "Expr: '{}'", expr);
         TCCKey ek{
             refId,
-            refKey.prefix(), //getContainerFunction(context, e)
+            refKey.scope(), //refKey.prefix(), //getContainerFunction(context, e)
             expr,
         };
         TCC_DEBUG(logKey, "QN: {}", String(ek));
@@ -882,12 +890,12 @@ namespace tcc {
                 if(field->isAnonymousStructOrUnion()) {
                     TCC_DEBUG(logKey, "Member is an anonymous record");
                     std::string ut = nameUT(record);
-                    qn = TCCKey{qn.id() + ut, qn.prefix()};
+                    qn = TCCKey{qn.id() + "::" + ut, qn.scope(), qn.operation()};
                 }
                 else {
                     auto recordName = record->getDecl()->getNameAsString();
                     TCC_DEBUG(logKey, "Member record name: {}", recordName);
-                    qn = TCCKey{qn.id() + recordName, qn.prefix()};
+                    qn = TCCKey{qn.id() + "::" + recordName, qn.scope(), qn.operation()};
                 }
             }
         }
@@ -927,6 +935,64 @@ namespace tcc {
             makeTypeMetadata(context, e)
         };
     }
+
+    // TODO
+    auto makeTCCNodeForSwitchStmt(ASTContext &context,
+            SwitchStmt const &sw)
+        -> TCCNode {
+
+        auto const *cond_ = sw.getCond();
+
+        std::string cond = String(context, *cond_);
+
+        auto const logKey = cond;
+        TCC_DEBUG_FN(logKey);
+        TCC_DEBUG(logKey, "Building TCCNode for switch case: {}", cond);
+
+        auto const qn = "dummy:" + cond;
+        return {
+            {&context, &sw},
+            TCCKey(qn, getContainerFunction(context, sw)),
+            qn,
+            "bool",
+            "dummy-switch-condition",
+            sourceLocation(sw).printToString(context.getSourceManager()), // check if castexpr is needed
+            {}
+        };
+    }
+
+    auto makeTCCNodeForSwitchCase(ASTContext &context,
+            SwitchStmt const &sw,
+            SwitchCase const &swc)
+        -> TCCNode {
+
+        auto const *cond_ = sw.getCond();
+
+        std::string cond = String(context, *cond_);
+        std::string val;
+        if(auto const *sc = dyn_cast<clang::CaseStmt>(&swc)) {
+            val = String(context, *(sc->getLHS()));
+        }
+        else {
+            val = "default";
+        }
+
+        auto const logKey = cond + "==" + val;
+        TCC_DEBUG_FN(logKey);
+        TCC_DEBUG(logKey, "Building TCCNode for switch case: {}", val);
+
+        auto const qn = "dummy:" + cond + "==" + val;
+        return {
+            {&context, &swc},
+            TCCKey(qn, getContainerFunction(context, sw)),
+            qn,
+            "bool",
+            "dummy-switch-case",
+            sourceLocation(swc).printToString(context.getSourceManager()), // check if castexpr is needed
+            {}
+        };
+    }
+
 
     class TCCNodesDB {
     public:
