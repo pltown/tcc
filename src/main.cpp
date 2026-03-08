@@ -1,3 +1,8 @@
+// accept inputs
+// -> run matchers
+// -> process metadata gathered
+//   --> add annotations if needed
+
 //import tcc;
 #include "tcc-census-visitor.cpp"
 #include "tcc-utils-threads.cpp"
@@ -22,11 +27,34 @@ using namespace llvm;
 using namespace tcc;
 using llvm::errs;
 
-// accept inputs
-// run matchers
-// process metadata gathered
-// add annotations if needed
+static llvm::cl::OptionCategory tccCategory("tcc run options");
 
+//unsigned SUMMARY_DEPTH = 0;
+//static cl::opt<int> optSummaryDepth(
+//        "summary-depth",
+//        cl::desc("Control depth of summary tree in output"),
+//        cl::init(4), cl::cat(tccCategory));
+
+static cl::opt<unsigned> optVerbosity(
+        "v",
+        cl::desc("Control output log level: 0(None), 1(Errors), 2(Warnings), 3(Info), 4(Debug)"),
+        cl::init(0), cl::cat(tccCategory));
+
+static cl::opt<bool> optIgnoreCompileDB(
+        "no-db",
+        cl::desc("Ignore compile db and use input c filenames"),
+        cl::init(0), cl::cat(tccCategory));
+
+static cl::opt<bool> optJobs(
+        "jobs",
+        cl::desc("Maximum number of threads to use; if not specified, system-supported max is used"),
+        cl::init(0), cl::cat(tccCategory));
+
+static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
+
+static cl::extrahelp Morehelp("\nREDO More help text...\n");
+
+///
 void setLogLevel(unsigned verbosity) {
     switch(verbosity) {
         case 0: // None
@@ -64,33 +92,7 @@ auto run(unsigned jobs, std::vector<std::string> sources,
        CompilationDatabase const &cdb)
     -> int;
 
-unsigned SUMMARY_DEPTH = 0;
-
-static llvm::cl::OptionCategory tccCategory("tcc run options");
-
-static cl::opt<int> optSummaryDepth(
-        "summary-depth",
-        cl::desc("Control depth of summary tree in output"),
-        cl::init(4), cl::cat(tccCategory));
-
-static cl::opt<unsigned> optVerbosity(
-        "v",
-        cl::desc("Control output log level: 0(None), 1(Errors), 2(Warnings), 3(Info), 4(Debug)"),
-        cl::init(0), cl::cat(tccCategory));
-
-static cl::opt<bool> optIgnoreCompileDB(
-        "no-db",
-        cl::desc("Ignore compile db and use input c filenames"),
-        cl::init(0), cl::cat(tccCategory));
-
-static cl::opt<bool> optJobs(
-        "jobs",
-        cl::desc("Maximum number of threads to use; if not specified, system-supported max is used"),
-        cl::init(0), cl::cat(tccCategory));
-
-static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
-
-static cl::extrahelp Morehelp("\nREDO More help text...\n");
+///
 
 auto main(int argc, const char **argv) -> int {
     FLOG = fopen("tcc-dump.txt", "w");
@@ -107,7 +109,7 @@ auto main(int argc, const char **argv) -> int {
 
     auto &args = expectedParser.get();
 
-    SUMMARY_DEPTH = optSummaryDepth;
+    //SUMMARY_DEPTH = optSummaryDepth;
     setLogLevel(optVerbosity);
     auto cfiles = filterC((optIgnoreCompileDB)
             ? (args.getSourcePathList())
@@ -162,6 +164,23 @@ void printHistories(TCCStore const &tdb,
     }
 }
 
+void printSourceStats(tcc::Counter const &stats) {
+    constexpr auto logKey = "source-stats";
+    //fmt::print(FLOG, "[{}] Function Decls: {}\n", logKey, stats.value<FunctionDecl>());
+    fmt::print(FLOG, "[{}] Var Decls: {}\n", logKey, stats.value<VarDecl>());
+    fmt::print(FLOG, "[{}] Exprs: {}\n", logKey, stats.value<Expr>());
+    fmt::print(FLOG, "[{}] BinaryOperators: {}\n", logKey, stats.value<BinaryOperator>());
+    fmt::print(FLOG, "[{}] BinOp Assignments: {}\n", logKey, stats.value("BinaryOperator-Assignment"));
+    fmt::print(FLOG, "[{}] BinOp Arithmetic: {}\n", logKey, stats.value("BinaryOperator-Arithmetic"));
+    fmt::print(FLOG, "[{}] Call Exprs: {}\n", logKey, stats.value<CallExpr>());
+    fmt::print(FLOG, "[{}] CallExprs via Fptrs: {}\n", logKey, stats.value("CallExpr-Fptr"));
+    fmt::print(FLOG, "[{}] Casts: {}\n", logKey, stats.value<CastExpr>());
+    fmt::print(FLOG, "[{}] Member Accesses: {}\n", logKey, stats.value<MemberExpr>());
+    fmt::print(FLOG, "[{}] UnaryOperators: {}\n", logKey, stats.value<UnaryOperator>());
+    fmt::print(FLOG, "[{}] Unary AddressOfs: {}\n", logKey, stats.value("UnaryOperator-AddressOf"));
+    fmt::print(FLOG, "[{}] Unary Derefs: {}\n", logKey, stats.value("UnaryOperator-Deref"));
+}
+
 auto run(unsigned jobs, std::vector<std::string> sources,
        CompilationDatabase const &cdb) -> int {
 
@@ -187,8 +206,10 @@ auto run(unsigned jobs, std::vector<std::string> sources,
         auto f = pool.async([&, file, tid]() -> TCCCollection {
             fmt::print(stdout, "[{}] Starting thread for {}\n", tid, file);
 
-            TCCCensusConsumer collector(&(ast->getASTContext()));
+            Counter stats;
+            TCCCensusConsumer collector(&(ast->getASTContext()), stats);
             collector.HandleTranslationUnit(ast->getASTContext());
+            printSourceStats(stats);
 
             return collector.results();
         });

@@ -136,7 +136,6 @@ namespace tcc {
         ExtendedCastContext context_;
         TypeProvenanceConstraint constraint_;
         std::optional<Constraint> replacement_ = {};
-        //std::pair<TCCNode::KeyRef, TCCNode::KeyRef> substitution_;
     };
 
     // CastHistoryInstance is a cast history where the constraints have been instantiated
@@ -203,6 +202,14 @@ namespace tcc {
             CastHistoryInstance const &hi)
         -> std::string {
 
+        auto connector = [](auto domt, auto childt) -> std::string {
+            if(domt == childt) {
+                return "=="; //"＝";
+            }
+            else {
+                return "=>"; //🢥";//⇒
+            }
+        };
 
         auto const &id = hi.id();
         auto const &next = hi.resolution(tdb);
@@ -227,17 +234,32 @@ namespace tcc {
                     + "', scope: '" + cc.scope() + "'}](";
             }
         }
-        */
         if(hi.context().size() > 0) {
             auto cc = hi.context().front();
             history += "[cc: " + cc.id() + "]";
         }
+        */
+        if(hi.context().size() > 0) {
+            history += "[";
+            for(auto const &cc: hi.context()) {
+                history += "cc: " + cc.id() + ";";
+            }
+            history += "]";
+        }
+
         history += node.type_;
-        if(id != next) {
-            history += "(" + next + ") via <" + node.id() + ">";
+        if(id != next && tdb.db().contains(next)) {
+            auto const &hk = node.key();
+            auto const &nk = tdb.getKey(next);
+            history += "(" + nk.scope() + nk.tail() + ") via <" + hk.scope() + hk.tail() + ">";
+            //history += "(" + next + ") via <" + node.id() + ">";
         }
         else {
-            history += "(" + next + ")";
+            if(tdb.db().contains(next)) {
+            auto const &nk = tdb.getKey(next);
+            history += "(" + nk.scope() + nk.tail() + ")";
+            //history += "(" + next + ")";
+            }
         }
         if(hi.nexts().empty()) {
             history += ")";
@@ -247,12 +269,14 @@ namespace tcc {
             return history;
         }
 
-        history += "\n" + indent + "=> {\n";
+        history += "\n" + indent;
+        //Symbol depends on next: history += "\n" + indent + "=> {\n";
         nbSpace += 2;
         //history += " =>〈";
         auto toReplace = false;
         for(auto const &next: hi.nexts()) {
-            history += "+" + std::string(nbSpace + 1, '-') + String(tdb, next);
+            history += "+" + std::string(nbSpace + 1, '-')
+                + connector(node.type_,  tdb.getNode(next.id()).type_) + String(tdb, next);
             history += ",\n"; // + std::string(nbSpace, ' ');
             toReplace = true;
         }
@@ -426,9 +450,12 @@ namespace tcc {
                 if(!seen[String(nextTop)]) {
                     stack.push({nextTop, 0, {}});
                     auto const &[newTop, _, __] = stack.top();
-                    //TCC_DEBUG(logKey, "(stack)[Top= {}] Updated stack", String(newTop));
-                    TCC_DEBUG(logKey, "(stack)[Top= {}] Updating context stack with '{}'", strTop, String(newTop.context()));
-                    gcc.push(nextTop.context());
+                    TCC_DEBUG(logKey, "(stack)[Top= {}] Updated stack", String(newTop));
+                    //TCC_DEBUG(logKey, "(stack)[Top= {}] Updating context stack with '{}'", strTop, String(newTop.context()));
+                    //gcc.push(nextTop.context());
+                    for(auto const &c: nextTop.context()) {
+                        gcc.push(c);
+                    }
                 }
             }
             else {

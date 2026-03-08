@@ -3,6 +3,7 @@
 
 //module;
 
+#include "tcc-castContext.cpp"
 #include "tcc-tccnode.cpp"
 
 #include "logger.h"
@@ -20,102 +21,11 @@
 
 //export namespace tcc {
 namespace tcc {
-    class CastContext {
-    public:
-        enum Kind {
-            #define CC_KIND(name) name,
-            #include "tcc-cast-context.def"
-            #undef CC_KIND
-        };
-
-        using KeyRef = TCCNode::KeyRef;
-        using ContextMap = std::unordered_map<KeyRef, KeyRef>; //llvm::StringMap<KeyRef>;
-        using MappedNode = ContextMap::value_type;
-
-    public:
-        CastContext() = default;
-        CastContext(Kind k,
-                std::string id,
-                std::string container):
-            kind_(k),
-            id_(id),
-            containerFn_(container){}
-
-        auto kind() const -> Kind {
-            return kind_;
-        }
-
-        // TODO Why?
-        void setKind(Kind k) {
-            kind_ = k;
-        }
-
-
-        auto id() const -> KeyRef {
-            return id_;
-        }
-
-        auto scope() const -> std::string {
-            return containerFn_;
-        }
-
-        auto size() const -> std::size_t {
-            return mappedNodes_.size();
-        }
-
-        auto empty() const -> bool {
-            return size() == 0;
-        }
-
-        //auto insert(llvm::StringRef key, KeyRef val) -> bool {
-        auto insert(KeyRef key, KeyRef val) -> bool {
-            return mappedNodes_.emplace(key,val).second;
-        }
-
-        auto data() const -> ContextMap const& {
-            return mappedNodes_;
-        }
-
-        friend auto operator==(CastContext const &a,
-                CastContext const &b)
-            -> bool {
-            return a.id_ == b.id_
-                && a.kind_ == b.kind_
-                && a.containerFn_ == b.containerFn_
-                && a.mappedNodes_ == b.mappedNodes_;
-        }
-        // member access operator
-
-    private:
-        Kind kind_  = Kind::Unknown;
-        // id (subscript) could be dom->child pair or name of function or type of operation
-        // should include location (for scope)
-        std::string id_ = "Default (probably invalid) context";
-        // function where the context is applicable (superscript)
-        std::string containerFn_;
-        ContextMap mappedNodes_;
-    };
-
-    auto String(CastContext::Kind k) -> std::string {
-        switch(k) {
-            #define CC_KIND(name) case CastContext::name: return #name;
-            #include "tcc-cast-context.def"
-            #undef CC_KIND
-        }
-    }
-
-    auto String(CastContext const &cc) -> std::string {
-        auto tag = cc.id() + "@" + cc.scope();
-        return String(cc.kind())
-            + "<" + tag + ">"
-            + "[" + std::to_string(cc.data().size()) + "]"
-            + "<" + tag + "/>";
-    }
-
     class TypeProvenanceConstraint {
     public:
         using KeyRef = TCCNode::KeyRef;
         using ConstrainedNodes = std::pair<KeyRef, KeyRef>;
+        using Contexts = std::vector<CastContext>;
 
         auto dom() const -> KeyRef {
             return nodes_.first;
@@ -125,29 +35,30 @@ namespace tcc {
             return nodes_.second;
         }
 
-        auto context() const -> CastContext {
-            return context_;
+        auto context() const -> Contexts {
+            return contexts_;
         }
 
         explicit TypeProvenanceConstraint(ConstrainedNodes n,
-                std::optional<CastContext> context = {}):
+                std::optional<Contexts> context = {}):
             nodes_(n),
-            context_(context.value_or(CastContext())) {}
+            contexts_(context.value_or(Contexts())) {}
 
         friend auto operator==(TypeProvenanceConstraint const &a,
                 TypeProvenanceConstraint const &b)
             -> bool {
             return a.nodes_ == b.nodes_
-                && a.context_ == b.context_;
+                && a.contexts_.size() == b.contexts_.size()
+                && a.contexts_ == b.contexts_;
         }
 
     private:
         ConstrainedNodes nodes_;
-        CastContext context_;
+        Contexts contexts_;
     };
 
     auto String(TypeProvenanceConstraint const &dc) -> std::string {
-        return dc.dom()  + " => " + dc.child();
+        return dc.dom()  + " 🡒 " + dc.child(); //🡒 ->  //🡺,🡒,➔,➝,➞,⟶,⇾,=>,➾
     }
 
     // Cast history is a collection of dominator constraints
@@ -180,11 +91,16 @@ namespace tcc {
             return constraints_;
         }
 
-        //auto print() const -> std::string {
-        //}
-        // strong update? (related to dfg)
-        //auto printV2() const -> std::string {
-        //}
+        auto getConstraintFor(KeyRef child) const -> std::optional<TypeProvenanceConstraint> {
+            for(auto const &c: constraints_) {
+                if(c.child() == child) {
+                    return c;
+                }
+            }
+            return {};
+        }
+
+        //points-to, may-pointsto
 
         friend auto operator==(CastHistory const &h1, CastHistory const &h2) -> bool {
             return h1.id_ == h2.id_;

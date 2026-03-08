@@ -392,10 +392,12 @@ namespace tcc {
             }
         }
 
+        /*
         if(fn->isVariadic()) {
             TCC_DEBUG(logKey, "Callee is variadic and not yet supported!");
             return nullptr;
         }
+        */
 
         return fn;
     }
@@ -502,6 +504,10 @@ namespace tcc {
                 TCC_DEBUG(logKey, "Checking parents of: {}", String(context, *stmt));
                 parents = context.getParents(*stmt);
             }
+            else if(auto const *decl = parents[0].get<Decl>()) {
+                TCC_DEBUG(logKey, "Checking parents of: {}", String(context, *decl));
+                parents = context.getParents(*decl);
+            }
             else {
                 TCC_DEBUG(logKey, "Reached non-stmt, non-decl node; cannot continue");
                 return nullptr;
@@ -535,7 +541,6 @@ namespace tcc {
         return fn->getNameAsString();
     }
 
-    //qnfromfptrcall
 } // namespace tcc end
 
 #endif // end TCC_UTILS
