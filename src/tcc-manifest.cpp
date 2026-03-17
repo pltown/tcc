@@ -163,35 +163,13 @@ namespace tcc {
             conditions_.push(cc);
         }
 
-        /*
-        auto conditionContext() -> Contexts {
-            Contexts ccs;
-            //Contexts::const_iterator top = topConditionContext_;
-            if(topConditionContext_ != conditionContext_.begin()) {
-                std::copy(begin(conditionContext_), topConditionContext_, std::back_inserter(ccs));
-            }
-            return ccs;
-            //return conditionContext_;
+        auto currentFn() -> std::string_view {
+            return currentFunction_;
         }
 
-        void pushConditionContext(CastContext const &cc) {
-            if(topConditionContext_ == conditionContext_.end()) {
-                conditionContext_.push_back(cc);
-                topConditionContext_ = conditionContext_.end();
-            }
-            else {
-                *topConditionContext_ = cc;
-                //topConditionContext_ = conditionContext_.insert(std::next(topConditionContext_), cc);
-                ++topConditionContext_;
-            }
+        void resetCurrentFn(std::string fn = "") {
+            currentFunction_ = std::move(fn);
         }
-
-        void popConditionContext() {
-            if(topConditionContext_ != conditionContext_.begin()) {
-                --topConditionContext_;
-            }
-        }
-        */
 
         TCCManifest(ASTContext *context, Counter &stats):
             context_(*context),
@@ -199,17 +177,32 @@ namespace tcc {
 
     private:
         ASTContext &context_;
-        //Contexts conditionContext_;
         std::stack<CastContext> conditions_;
         Contexts::iterator topConditionContext_;
-        llvm::DenseSet<Expr *> seenExprs_;
-        llvm::DenseSet<Decl *> seenDecls_;
         llvm::DenseSet<llvm::PointerUnion<Decl const*, Stmt const*>> seenNodes_;
+        std::string currentFunction_;
 
     public:
         //std::optional<FunctionDecl const*> function;
         Counter &SourceCounter;
         //std::string Condition;
+    };
+
+    class ManifestFunctionUpdater {
+        public:
+            ManifestFunctionUpdater(TCCManifest &manifest, FunctionDecl const *fd):
+                manifest_(manifest) {
+
+                TCC_DEBUG("containerUpdate", "Updating manifest: current function = {}", fd->getNameAsString());
+                manifest_.resetCurrentFn(fd->getNameAsString());
+            }
+
+            ~ManifestFunctionUpdater() {
+                TCC_DEBUG("containerUpdate", "Resetting manifest current function: {}", manifest_.currentFn());
+                manifest_.resetCurrentFn();
+            }
+        private:
+            TCCManifest &manifest_;
     };
 }
 

@@ -91,10 +91,15 @@ namespace tcc {
         // struct definition, union definion: maybe not
         //auto VisitCompoundStmt(CompoundStmt *cs) -> bool;
 
+        auto TraverseFunctionDecl(FunctionDecl *fd) -> bool;
         auto VisitFunctionDecl(FunctionDecl *fd) -> bool;
+
         auto VisitVarDecl(VarDecl *vd) -> bool;
 
-        auto handleExpr(Expr *e) -> bool;
+        //auto TraverseCompoundStmt(CompoundStmt *cs) -> bool;
+        auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
+
+        auto VisitExpr(Expr *e) -> bool;
         auto VisitBinaryOperator(BinaryOperator *bop) -> bool;
         void handleBinaryAssignment(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
         void handleBinaryArithmetic(BinaryOperator const *bop, Expr const *lhs, Expr const *rhs);
@@ -103,14 +108,12 @@ namespace tcc {
         auto VisitCallExpr(CallExpr *call) -> bool;
         auto VisitCastExpr(CastExpr *cast) -> bool;
         auto VisitMemberExpr(MemberExpr *mex) -> bool;
-        auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
         auto VisitUnaryOperator(UnaryOperator *uop) -> bool;
         void handleUnaryAddressOf(UnaryOperator const *uop, Expr const *e);
         void handleUnaryDeref(UnaryOperator const *uop, Expr const *e);
 
         // visit return statement may be needed to link conditional return on base ptr
         //
-        //void trackSwitchCondition(Expr const *e);
         //void handleFptrCall(CallExpr const *call, DeclRefExpr const *fptr);
         //void handleFunctionCall(CallExpr const *call, FunctionDecl const *fn);
         //void checkSwitchConditionForMember(MemberExpr *mex, DeclRefExpr const *dre, TCCNode const &dest);
@@ -186,7 +189,6 @@ namespace tcc {
     */
 } // namespace tcc end
 
-// TODO fix: should only take constraint and take key from constraint.dom
 static void append(CastHistories &archive, TCCNode::KeyRef const &key, std::optional<TypeProvenanceConstraint> constraint = {});
 static void logUpdate(TCCNodesDB const &db, TCCNode::KeyRef const &src, TCCNode::KeyRef const &dest);
 auto isPointerArithmeticOperation(BinaryOperator const &bop) -> bool;
@@ -198,22 +200,40 @@ auto makeTCCNodeForParamFromCall(TCCManifest &manifest, CallExpr const &call, un
 auto makeTCCNodeForDRE(TCCManifest &manifest, Expr const &originalExpr, DeclRefExpr const &dre) -> TCCNode;
 auto makeTCCNodeForMemberExpr(TCCManifest &manifest, MemberExpr const &mex, ValueDecl const &member) -> TCCNode;
 
-auto TCCCensusVisitor::VisitFunctionDecl(FunctionDecl *fd) -> bool {
-    manifest_.SourceCounter.bump<FunctionDecl>();
+auto TCCCensusVisitor::TraverseFunctionDecl(FunctionDecl *fd) -> bool {
+    auto const logKey = String(context_, *fd);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *fd) + ">");
+
+    auto rc = VisitFunctionDecl(fd);
+    if(!fd->hasBody()) {
+        return true;
+    }
+
+    ManifestFunctionUpdater mark(manifest_, fd);
+    rc = TraverseCompoundStmt(dyn_cast<CompoundStmt>(fd->getBody()));
     manifest_.markSeen({fd});
+    //manifest_.resetCurrentFn();
+    return rc;
+}
+
+auto TCCCensusVisitor::VisitFunctionDecl(FunctionDecl *fd) -> bool {
+    auto const logKey = String(context_, *fd);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *fd) + ">");
+
+    manifest_.SourceCounter.bump<FunctionDecl>();
+    //manifest_.setCurrentFn(fd->getNameAsString());
     return true;
 }
 
-auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
+auto roTCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     auto const logKey = String(context_, *vd);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *vd) + ">");
 
     if(vd->hasInit()) {
+        VisitExpr(vd->getInit());
+
         manifest_.SourceCounter.bump<VarDecl>();
         auto const *init = vd->getInit();
-
-        //auto const *fn = getContainerFunctionDecl(context_, *vd);
-        //ManifestFunctionUpdater reset(manifest_, fn);
 
         auto src = makeTCCNodeForExpr(manifest_, *init);
         auto dest = makeTCCNodeForVarDecl(manifest_, *vd);
@@ -225,7 +245,98 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     return true;
 }
 
-auto TCCCensusVisitor::handleExpr(Expr *e) -> bool {
+/*
+auto TCCCensusVisitor::TraverseCompoundStmt(CompoundStmt *cs) -> bool {
+    auto const logKey = "Body <@" + stringLocation(context_, *cs) + ">";
+    // covers ALL braced bodies
+
+    for(auto *child: cs->body()) {
+        if(auto *sw = dyn_cast<SwitchStmt>(child)) {
+            VisitSwitchStmt(sw);
+            //if(!VisitSwitchStmt(sw)) {
+            //    TCC_ERROR(logKey, "Visit error at <switch> @<{}>", stringLocation(context_, *sw));
+            //    return false;
+            //}
+        }
+        else if(auto *e = dyn_cast<Expr>(child)) {
+            VisitExpr(e);
+            //if(!VisitExpr(e)) {
+            //    TCC_ERROR(logKey, "<expr> @<{}>", stringLocation(context_, *e));
+            //    return false;
+            //}
+        }
+        else if(auto *stmt = dyn_cast<Stmt>(child)) {
+            TraverseStmt(stmt);
+            //if(!VisitStmt(stmt)) {
+            //    TCC_ERROR(logKey, "<stmt> @<{}>", stringLocation(context_, *stmt));
+            //    return false;
+            //}
+        }
+    }
+
+    return true;
+}
+*/
+
+auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
+    auto const logKey = String(context_, *(ss->getCond()));
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *ss) + ">");
+
+    auto *cond_ = ss->getCond();
+    //VisitExpr(cond_);
+
+    manifest_.SourceCounter.bump<SwitchStmt>();
+
+    std::string cond = String(context_, *cond_);
+    //logKey = cond;
+    auto ck = CastContext::Kind::SwitchCondition;
+
+    std::string val;
+    auto * scl = ss->getSwitchCaseList();
+    while(scl) {
+        if(auto const *ssc = dyn_cast<CaseStmt>(scl)) {
+            val = String(context_, *(ssc->getLHS()));
+        }
+        else {
+            val = "default";
+        }
+
+        auto *tsc = scl;
+        while(auto *nc = dyn_cast<SwitchCase>(tsc->getSubStmt())) {
+            // cascading case
+            if(auto *nsc = dyn_cast<CaseStmt>(nc)) {
+                val += " | " + String(context_, *(nsc->getLHS()));
+            }
+            else {
+                val += " | default";
+            }
+            tsc = nc;
+        }
+
+        CastContext cc(ck, cond + " == " + val, std::string(manifest_.currentFn()));
+        //CastContext cc(ck, cond + " == " + val, getContainerFunction(context_, *ss));
+        TCC_DEBUG(logKey, "Pushing context to manifest for: {} == {}", cond, val);
+        manifest_.pushConditionContext(cc);
+        //TraverseCompoundStmt(dyn_cast<CompoundStmt>(tsc->getSubStmt()));
+        for(auto *schild: tsc->getSubStmt()->children()) {
+            if(auto *se = dyn_cast<Expr>(schild)) {
+                TCC_DEBUG(logKey, "Next visit: {}", String(context_, *se));
+                VisitExpr(se);
+            }
+            else {
+                TCC_DEBUG(logKey, "Next visit: {}", String(context_, *schild));
+                TraverseStmt(schild);
+            }
+        }
+        TCC_DEBUG(logKey, "Popping context from manifest for: {} == {}", cond, val);
+        manifest_.popConditionContext();
+
+        scl = tsc->getNextSwitchCase();
+    }
+    return true;
+}
+
+auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
     manifest_.SourceCounter.bump<Expr>();
     auto const logKey = String(context_, *e);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
@@ -250,191 +361,26 @@ auto TCCCensusVisitor::handleExpr(Expr *e) -> bool {
     else if(auto *ce = dyn_cast<CastExpr>(e)) {
         return VisitCastExpr(ce);
     }
-    /*
-    if(dyn_cast<SwitchStmt>(e)) {
-        return true;
-    }
-    if(dyn_cast<SwitchCase>(e)) {
-        return true;
-    }
-    */
 
     manifest_.markSeen(e);
 
-    //trackSwitchCondition(e);
     return true;
 }
-
-/*
-auto TCCCensusVisitor::VisitFunctionDecl(FunctionDecl *fd) -> bool {
-    auto const logKey = String(context_, *fd);
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *fd) + ">");
-
-    if(fd->hasBody()) {
-        TCC_DEBUG(logKey, "Updating manifest: begin function = {}", fd->getNameAsString());
-        manifest_.function = fd;
-        TraverseStmt(fd->getBody());
-        TCC_DEBUG(logKey, "Updating manifest: end function = {}", fd->getNameAsString());
-        manifest_.function = {};
-    }
-
-    return true;
-}
-
-class ManifestFunctionUpdater {
-    public:
-        ManifestFunctionUpdater(TCCManifest &manifest, FunctionDecl const *fd):
-            manifest_(manifest) {
-
-            if(manifest.function) {
-                old = manifest.function.value();
-            }
-            auto olds = (old) ? old->getNameAsString() : "null";
-            TCC_DEBUG("containerUpdate", "Current manifest: function = {}", olds);
-
-            if(!fd) {
-                TCC_DEBUG("containerUpdate", "Updating manifest: function = null");
-            }
-            else {
-                TCC_DEBUG("containerUpdate", "Updating manifest: function = {}", fd->getNameAsString());
-            }
-            manifest.function = fd;
-        }
-
-        ~ManifestFunctionUpdater() {
-            if(!old) {
-                TCC_DEBUG("conatinerUpdate", "Resetting manifest: function = null");
-            }
-            else {
-                TCC_DEBUG("containerUpdate", "Resetting manifest: {}", old->getNameAsString());
-            }
-            manifest_.function = old;
-        }
-    private:
-        TCCManifest &manifest_;
-        FunctionDecl const *old = nullptr;
-};
-
-auto TCCCensusVisitor::VisitCompoundStmt(CompoundStmt *cs) -> bool {
-    auto const logKey = String(context_, *cs);
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *cs) + ">");
-
-    auto parents = context_.getParents(*cs);
-    if(parents.empty()) {
-        TCC_DEBUG(logKey, "Skipping: no parent => not switch");
-        return true;
-    }
-    if(auto const *sc = parents[0].get<clang::SwitchCase>()) {
-        TCC_DEBUG(logKey, "Found switch case parent");
-        auto src = db_.add(TCCNode(
-                        {&context_, cs},
-                        TCCKey(String(context_, *cs),
-                            getContainerFunction(context_, *cs)),
-                        String(context_, *cs),
-                        "n/a",
-                        "dummy-switch-case",
-                        sourceLocation(*cs).printToString(context_.getSourceManager()),
-                        {}
-                    ));
-        for(auto c: cs->children()) {
-            if(auto const *ec = dyn_cast<Expr>(c)) {
-                auto dest = db_.add(makeTCCNodeForExpr(manifest_, *ec));
-                auto ck = CastContext::Kind::SwitchCase;
-                auto scope = db_.getTCCKey(dest).scope();
-                CastContext firstContext(ck, src, scope);
-                TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-                append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-                append(hdb_, dest);
-            }
-        }
-    }
-
-    TCC_DEBUG(logKey, "Skipping: parent is not a switch");
-    return true;
-}
-
-void TCCCensusVisitor::trackSwitchCondition(Expr const *e) {
-    auto const logKey = String(context_, *e);
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *e) + ">");
-
-    SwitchCase const *sc = nullptr;
-    auto parents = context_.getParents(*e);
-    while(parents.size() != 0
-        && parents[0].get<clang::SwitchStmt>() == nullptr) {
-
-        if(!sc && (sc = parents[0].get<clang::SwitchCase>())) {
-            TCC_DEBUG(logKey, "Found parent case: {}", String(context_, *sc));
-        }
-        parents = context_.getParents(parents[0]);
-    }
-
-    if(parents.size() == 0) {
-        TCC_DEBUG(logKey, "Skipping: no switch case found");
-        return;
-    }
-
-    if(!sc) {
-        TCC_DEBUG(logKey, "Skipping: no switch-case parent => No switch condition");
-        return;
-    }
-
-    auto const *st = parents[0].get<clang::SwitchStmt>();
-    if(!st) {
-        TCC_ERROR(logKey, "Skipping: cannot find parent switch after finding switch case");
-        return;
-    }
-
-    auto src = db_.add(makeTCCNodeForSwitchCase(manifest_, *st, *sc));
-    auto dest = db_.add(makeTCCNodeForExpr(manifest_, *e));
-
-    auto ck = CastContext::Kind::SwitchCase;
-    auto scope = db_.getTCCKey(dest).scope();
-    CastContext firstContext(ck, src, scope);
-    TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-    append(hdb_, dest);
-}
-*/
 
 auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     auto const logKey = String(context_, *bop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
 
-
-    //auto const *rhs = getChildFromSub<DeclRefExpr>(bop->getRHS());
-    //if(!rhs) {
-    //    TCC_DEBUG(logKey, "No DRE in RHS expr({}), likely a literal; skipping", String(context_, *bop));
-    //    return true;
-    //}
-    //auto const *lhs = getChildFromSub<DeclRefExpr>(bop->getLHS());
-    //if(!lhs) {
-    //    TCC_DEBUG(logKey, "No DRE in LHS expr({}), unlikely(unless function return)!; stopping", String(context_, *bop));
-    //    return false;
-    //}
-    //
-    //auto src = db_.add(makeTCCNodeForBinarySubExpr(manifest_, *rhs, sourceLocation(*rhs)));
-    //auto dest = db_.add(makeTCCNodeForBinarySubExpr(manifest_, *lhs, sourceLocation(*lhs)));
-    //
-    //auto ck = CastContext::Kind::Unknown;
-    //if(auto const &sn = db_.get(src); sn.tmd_.fptrType_) {
-    //    ck = CastContext::Kind::FptrAssignment;
-    //}
+    VisitExpr(bop->getLHS());
+    VisitExpr(bop->getRHS());
 
     if(bop->isAssignmentOp()) {
         manifest_.SourceCounter.bump<BinaryOperator>();
-        //auto const *fn = getContainerFunctionDecl(context_, *bop);
-        //ManifestFunctionUpdater reset(manifest_, fn);
         handleBinaryAssignment(bop, bop->getLHS(), bop->getRHS());
-        handleExpr(bop->getLHS());
-        handleExpr(bop->getRHS());
     }
     else if(bop->isMultiplicativeOp() || bop->isAdditiveOp()) {
         manifest_.SourceCounter.bump<BinaryOperator>();
-        //auto const *fn = getContainerFunctionDecl(context_, *bop);
-        //ManifestFunctionUpdater reset(manifest_, fn);
         handleBinaryArithmetic(bop, bop->getLHS(), bop->getRHS());
-        handleExpr(bop->getLHS());
-        handleExpr(bop->getRHS());
     }
 
     /*
@@ -452,17 +398,6 @@ auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     else if(bop->isComparisonOp()) {
         type = "Comparison";
     }
-
-    auto scope = db_.getTCCKey(dest).prefix();
-    CastContext firstContext(ck, type, scope);
-    TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-    if(bop->isAssignmentOp()) {
-        TCC_DEBUG(logKey, "(Assignment) Adding to call context: ({} = {})", dest, src);
-        cc.insert(dest, src);
-    }
-
-    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-    append(hdb_, dest);
     */
 
     return true;
@@ -507,7 +442,7 @@ void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
     auto const logKey = String(context_, *bop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
 
-    // TODO Check if array 
+    // TODO Check if array
     if(!isPtr(lhs) && !isPtr(rhs)) {
         TCC_DEBUG(logKey, "Skipping: no pointer in either lhs({}) or rhs({})",
                 String(context_, *lhs), String(context_, *rhs));
@@ -588,12 +523,13 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
     auto const logKey = String(context_, *call);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *call) + ">");
 
-    auto const *container = getContainerFunctionDecl(context_, *call);
-    //ManifestFunctionUpdater reset(manifest_, container);
     std::unordered_map<std::string, TCCNode::KeyRef> argHistories;
-    auto processArg = [&](Expr const &arg,
+    auto processArg = [&](Expr &arg,
             CastContext &cc,
             std::size_t pos) {
+
+        VisitExpr(&arg); // TODO improve?
+
         TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, arg));
         auto src = db_.add(makeTCCNodeForExpr(manifest_, arg));
         auto dest = db_.add(makeTCCNodeForParamFromCall(manifest_, *call, pos));
@@ -614,7 +550,7 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
     if(!fn) {
         TCC_DEBUG(logKey, "Cannot get function decl from callexpr; checking for fptr decl");
         // likely a fptr that is unresolved at the moment
-        // TODO: // fptr(args...) --> <fptr-qn>(<argqn>..)
+        // TODO: // fptr(args...) --> <fptr-qn>(<argqn>..) --> Done?
         if(auto const *fptrDRE = getFptrFromFptrCall(context_, *call)) {
             TCC_DEBUG(logKey, "Found fptr decl for callee");
             manifest_.SourceCounter.bump<CallExpr>();
@@ -624,7 +560,7 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
             CastContext firstContext(CastContext::Kind::FptrCall, String(context_, *call), fname);
             std::size_t pos = 0;
             std::for_each(call->arg_begin(), call->arg_end(),
-                [&](auto const *arg) {
+                [&](auto *arg) {
                     processArg(*arg, firstContext, pos++);
                 });
             //TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
@@ -660,29 +596,8 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
 
         std::size_t pos = 0;
         std::for_each(call->arg_begin(), call->arg_end(),
-            [&](auto const *arg) {
+            [&](auto *arg) {
                 processArg(*arg, firstContext, pos++);
-            /*
-                TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, *arg));
-                auto src = db_.add(makeTCCNodeForExpr(manifest_, *arg));
-                //auto src = db_.add(makeTCCNodeForCallArg(manifest_, *call, *arg));
-                auto dest = db_.add(makeTCCNodeForParamFromCall(manifest_, *call, pos++));
-
-                auto sk = db_.getTCCKey(src);
-                auto dk = db_.getTCCKey(dest);
-                // To get to hof.$1.$0 = f.$0, avoid:
-                // 1. (destk.prefix == srck.prefix => Links params: hof.$1.$0 = hof.$0
-                // 2. (destk.prefix.find_last_of(".") => hof.$1.$0 = hof.var
-                if(dk.prefix() != sk.prefix()
-                        && dk.prefix().find_last_of(".") == std::string::npos) {
-                    TCC_DEBUG(logKey, "[cc.size() = {}] Adding: ({} = {})",
-                            cc.size(), dest, src);
-                    cc.insert(dest, src);
-                    TCC_DEBUG(logKey, "[cc.size() = {}]", cc.size());
-                }
-
-                argHistories[src] = dest;
-            */
             });
         TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
         for(auto const &[src, dest]: argHistories) {
@@ -705,15 +620,19 @@ void TCCCensusVisitor::handleFunctionCall(CallExpr const *call, FunctionDecl con
 */
 
 auto TCCCensusVisitor::VisitCastExpr(CastExpr *cast) -> bool {
-    manifest_.SourceCounter.bump<CastExpr>();
     auto const logKey = String(context_, *cast);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *cast) + ">");
 
-    auto const *fn = getContainerFunctionDecl(context_, *cast);
-    //ManifestFunctionUpdater reset(manifest_, fn);
+    VisitExpr(cast->getSubExpr());
+
+    manifest_.SourceCounter.bump<CastExpr>(); // TODO check placement: maybe do after it is confirmed to be bitcast
     auto src = db_.add(makeTCCNodeForExpr(manifest_, *(cast->getSubExpr())));
     auto dest = db_.add(makeTCCNodeForExpr(manifest_, *cast));
-    if(src == dest && cast->getCastKind() != CK_BitCast) {
+    if(cast->getCastKind() == CK_LValueToRValue) {
+        TCC_DEBUG(logKey, "Skipping implicit LToR cast");
+        return true;
+    }
+    else if(src == dest && cast->getCastKind() != CK_BitCast) {
         TCC_DEBUG(logKey, "Skipping self-provenance in cast visit for cast kind: {}",
                 CastExpr::getCastKindName(cast->getCastKind()));
         return true;
@@ -783,8 +702,9 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     auto const logKey = String(context_, *mex);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *mex) + ">");
 
-    auto const *fn = getContainerFunctionDecl(context_, *mex);
-    //ManifestFunctionUpdater reset(manifest_, fn);
+    //memberdecl? Maybe not
+    VisitExpr(mex->getBase());
+
     // unnamed member is seen as follows
     //  s->s_type | s => s_type
     //  s->s_ints | base: s->   | S => s_ints
@@ -795,7 +715,7 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     // qn for anon members includes the type def
 
     auto const *base = mex->getBase();
-    TCCNode::KeyRef src;
+    std::optional<TCCNode> source;
     if(auto const *bmex = dyn_cast<MemberExpr>(base)) {
         TCC_DEBUG(logKey, "Base is a nested member");
         auto const *bdecl = bmex->getMemberDecl();
@@ -803,15 +723,12 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
             TCC_ERROR(logKey, "Cannot get nested member base decl");
             return true;
         }
-        src = db_.add(makeTCCNodeForMemberExpr(manifest_, *bmex, *bdecl));
+        source = makeTCCNodeForMemberExpr(manifest_, *bmex, *bdecl);
     }
     else if(auto const *dre = getChildFromSub<DeclRefExpr>(base)) {
         TCC_DEBUG(logKey, "Base dre: {}", String(context_, *dre));
-        src = db_.add(makeTCCNodeForDRE(manifest_, *base, *dre));
-
+        source = makeTCCNodeForDRE(manifest_, *base, *dre);
         // Additionally, this should be associated with the switch-case (if any) this expression is inside
-        //checkSwitchConditionForMember(mex, dre, src);
-        //trackSwitchCondition(mex);
     }
     else {
         TCC_ERROR(logKey, "Skipping: cannot get member base decl");
@@ -823,6 +740,7 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
         TCC_ERROR(logKey, "Skipping: cannot get member decl");
         return true;
     }
+    auto src = db_.add(std::move(*source)); // by this time source is valid
     auto dest = db_.add(makeTCCNodeForMemberExpr(manifest_, *mex, *member));
 
     logUpdate(db_, src, dest);
@@ -851,62 +769,13 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     return true;
 }
 
-auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
-    manifest_.SourceCounter.bump<SwitchStmt>();
-    auto const logKey = String(context_, *(ss->getCond()));
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *ss) + ">");
-
-    auto const *cond_ = ss->getCond();
-    std::string cond = String(context_, *cond_);
-    //logKey = cond;
-    auto ck = CastContext::Kind::SwitchCondition;
-
-    std::string val;
-    auto * scl = ss->getSwitchCaseList();
-    while(scl) {
-        if(auto const *ssc = dyn_cast<CaseStmt>(scl)) {
-            val = String(context_, *(ssc->getLHS()));
-        }
-        else {
-            val = "default";
-        }
-
-        auto *tsc = scl;
-        while(auto *nc = dyn_cast<SwitchCase>(tsc->getSubStmt())) {
-            // cascading case
-            if(auto *nsc = dyn_cast<CaseStmt>(nc)) {
-                val += " | " + String(context_, *(nsc->getLHS()));
-            }
-            else {
-                val += " | default";
-            }
-            tsc = nc;
-        }
-
-        CastContext cc(ck, cond + " == " + val, getContainerFunction(context_, *ss));
-        TCC_DEBUG(logKey, "Pushing context to manifest for: {} == {}", cond, val);
-        manifest_.pushConditionContext(cc);
-        for(auto *schild: tsc->getSubStmt()->children()) {
-            if(auto *se = dyn_cast<Expr>(schild)) {
-                TCC_DEBUG(logKey, "Next visit: {}", String(context_, *se));
-                handleExpr(se);
-            }
-        }
-        TCC_DEBUG(logKey, "Popping context from manifest for: {} == {}", cond, val);
-        manifest_.popConditionContext();
-
-        scl = tsc->getNextSwitchCase();
-    }
-    return true;
-}
-
 auto TCCCensusVisitor::VisitUnaryOperator(UnaryOperator *uop) -> bool {
     auto const logKey = String(context_, *uop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *uop) + ">");
 
+    VisitExpr(uop->getSubExpr());
+
     manifest_.SourceCounter.bump<UnaryOperator>();
-    auto const *fn = getContainerFunctionDecl(context_, *uop);
-    //ManifestFunctionUpdater reset(manifest_, fn);
     auto op = UnaryOperator::getOpcodeStr(uop->getOpcode());
     if(op == "&") {
         handleUnaryAddressOf(uop, uop->getSubExpr());
@@ -983,134 +852,6 @@ void TCCCensusVisitor::handleUnaryDeref(UnaryOperator const *uop, Expr const *e)
 }
 
 /*
-auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
-    manifest_.SourceCounter.bump<SwitchStmt>();
-    auto const logKey = String(context_, *ss);
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *ss) + ">");
-
-    auto const *cond = ss->getCond();
-    auto src = db_.add(makeTCCNodeForExpr(manifest_, *cond));
-    //auto dest = db_.add(makeTCCNodeForSwitchStmt(manifest_, *ss));
-    //auto ck = CastContext::Kind::SwitchCondition;
-    //auto label = String(context_, *cond);
-    //CastContext firstContext(ck, label, db_.getTCCKey(dest).scope());
-    //TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-    //append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-    //append(hdb_, dest);
-
-    auto scl = ss->getSwitchCaseList();
-    while(scl) {
-        if(auto const *sc = dyn_cast<CaseStmt>(scl)) {
-            auto const *scase = sc->getLHS();
-            //auto dest = db_.add(makeTCCNodeForExpr(manifest_, *(sc->getSubStmt())));
-            auto ck = CastContext::Kind::SwitchCondition;
-            //auto label = String(context_, *cond) + " == " + String(context_, *scase);
-            //if(auto const *sb = dyn_cast<Expr>(sc->getSubStmt())) {
-            //    auto dest = db_.add(makeTCCNodeForExpr(manifest_, *sb));
-            //    CastContext firstContext(ck, label, db_.getTCCKey(dest).scope());
-            //TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-            //    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-            //    append(hdb_, dest);
-            //}
-            auto dest = db_.add(makeTCCNodeForSwitchCase(manifest_, *ss, *scl));
-            CastContext firstContext(ck, dest, db_.getTCCKey(dest).scope());
-            TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-            //CastContext firstContext(ck, label, db_.getTCCKey(dest).scope());
-            //TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-            append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-            append(hdb_, dest);
-
-            //
-            auto const *tsc = scl;
-            while(auto const *nc = dyn_cast<SwitchCase>(tsc->getSubStmt())) {
-                // cascading case
-                tsc = nc;
-            }
-            //
-
-            auto const *tsct = tsc->getSubStmt();
-            auto dest2 = db_.add(TCCNode(
-                            {&context_, tsct},
-                            TCCKey(String(context_, *tsct),
-                                getContainerFunction(context_, *tsct)),
-                            String(context_, *tsct),
-                            "n/a",
-                            "dummy-switch-case",
-                            sourceLocation(*tsct).printToString(context_.getSourceManager()),
-                            {}
-                        ));
-            CastContext firstContext2(CastContext::Kind::SwitchCase, dest2, db_.getTCCKey(dest2).scope());
-            TypeProvenanceConstraint::Contexts cc2(1, std::move(firstContext));
-            append(hdb_, dest, TypeProvenanceConstraint({dest, dest2}, std::move(cc2)));
-            append(hdb_, dest2);
-            // visit substmt
-            // if stmt is case -> update manifest
-            // if not  -> pop and associate members
-            */
-            /*
-            auto d2 = db_.add(makeTCCNodeForExpr(manifest_, *(tsc->getSubStmt())));
-            CastContext firstContext2(CastContext::Kind::SwitchCase, d2, db_.getTCCKey(d2).scope());
-            TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-            append(hdb_, dest, TypeProvenanceConstraint({dest, d2}, std::move(cc2)));
-            append(hdb_, d2);
-            for(auto const *schild: sc->getSubStmt()->children()) {
-            */
-            /*
-            //for(auto const *schild: tsc->getSubStmt()->children()) {
-            //    if(auto const *se = dyn_cast<Expr>(schild)) {
-            //        auto dest2 = db_.add(makeTCCNodeForExpr(manifest_, *se));
-            //        CastContext firstContext(CastContext::Kind::SwitchCase, dest2, db_.getTCCKey(dest2).scope());
-            //        TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-            //        append(hdb_, dest, TypeProvenanceConstraint({dest, dest2}, std::move(cc)));
-            //        append(hdb_, dest2);
-            //    }
-            //}
-        }
-        else if(auto const *defc = dyn_cast<DefaultStmt>(scl)) {
-            // TODO
-        }
-        scl = scl->getNextSwitchCase();
-    }
-
-    return true;
-}
-
-void TCCCensusVisitor::checkSwitchConditionForMember(MemberExpr *mex, DeclRefExpr const *dre, TCCNode const &dest) {
-    auto const logKey = String(context_, *mex);
-    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *mex) + ">");
-
-    SwitchCase const *sc;
-    auto parents = context_.getParents(mex);
-    while(parents.size() != 0
-        && parents[0].get<clang::SwitchStmt>() == nullptr) {
-
-        if(!sc && (sc = parents[0].get<clang::SwitchCase>())) {
-            TCC_DEBUG(logKey, "Found parent case: {}", String(context_, *sc));
-        }
-        parents = context_.getParents(parents[0]);
-    }
-
-    if(!sc) {
-        TCC_DEBUG(logKey, "Skipping: no switch-case parent => No switch condition");
-        return;
-    }
-
-    auto const *st = parents[0].get<clang::SwitchStmt>();
-    if(!st) {
-        TCC_ERROR(logKey, "Skipping: cannot find parent switch after finding switch case");
-        return;
-    }
-
-    auto src = db_.add(makeTCCNodeForSwitchCase(manifest_, *st, *sc));
-
-    auto ck = CastContext::Kind::SwitchCase;
-    auto scope = db_.getTCCKey(dest).scope();
-    CastContext firstContext(ck, src, scope);
-    TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-    //append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
-    append(hdb_, dest);
-}
-
 */
 
 
@@ -1132,18 +873,24 @@ static void append(CastHistories &archive,
         return;
     }
 
+    /*
+    //CastHistories is an unorderd_map of constraints mapped to keys.
+    //If not inserted => key exists. Not that constraint exists
     if(!inserted) {
         std::vector<CastContext> cc;
         if(auto oldConstraint = it->second.getConstraintFor(constraint->child())) {
                 cc = oldConstraint->context();
         }
 
-        TCC_WARN("CensusUpdate", "Provenance constraint already exists: <{}>[{}]",
+        TCC_WARN("CensusUpdate", "Updating existing Provenance constraint: <{}>[{}]",
+        //TCC_WARN("CensusUpdate", "Provenance constraint already exists: <{}>[{}]",
             contexts(cc), String(*constraint));
-        TCC_WARN("CensusUpdate", "New provenance constraint <{}>[{}] ignored",
+        TCC_WARN("CensusUpdate", "New provenance constraint: <{}>[{}]",
+        //TCC_WARN("CensusUpdate", "New provenance constraint <{}>[{}] ignored",
             contexts(constraint->context()), String(*constraint));
-        return;
+        //return;
     }
+    */
 
     it->second.append(std::move(*constraint));
     TCC_DEBUG("CensusUpdate", "Provenance constraint: <{}>[{}]",
@@ -1226,7 +973,6 @@ auto qualifiedNameValueDecl(TCCManifest &manifest,
     logKey += name.getAsString();
 
     auto const *fn = getContainerFunctionDecl(context, vd);
-    //if(!manifest.function || !manifest.function.value()) {
     if(!fn) {
         TCC_DEBUG(logKey, "Container function is null");
         auto qn = TCCKey(name.getAsString(), "::");
@@ -1234,7 +980,6 @@ auto qualifiedNameValueDecl(TCCManifest &manifest,
         return qn;
     }
 
-    //auto const *fn = manifest.function.value();
     if(auto parmIndex = getParameterIndex(*fn, name)) {
         auto qn = qualifiedNameForParm(manifest, *fn, *parmIndex);
         TCC_DEBUG(logKey, "parmIndex: {}; QN: {}", parmIndex.value(), String(qn));
@@ -1243,7 +988,6 @@ auto qualifiedNameValueDecl(TCCManifest &manifest,
 
     TCC_DEBUG(logKey, "parmIndex is nullopt (identifier is not a parm)");
     auto qn = TCCKey(name.getAsString(), fn->getNameAsString());
-    //auto qn = TCCKey(name.getAsString(), getContainerFunction(context, vd));
     TCC_DEBUG(logKey, "QN: {}", String(qn));
     return qn;
 }
@@ -1360,6 +1104,7 @@ auto qualifiedNameDRE(TCCManifest &manifest,
         if(decl->getFunctionType()) {
             auto qn = TCCKey {
                 String(context, *decl),
+                //std::string(manifest.currentFn())
                 getContainerFunction(context, *decl)
             };
             TCC_DEBUG(logKey, "DRE decl is a function type; qn = fn-name = '{}'", String(qn));
@@ -1369,7 +1114,8 @@ auto qualifiedNameDRE(TCCManifest &manifest,
         TCC_WARN(logKey, "DRE decl is neither vardecl nor fptr!");
         auto qn = TCCKey {
             String(context, dre),
-            getContainerFunction(context, *decl)
+            std::string(manifest.currentFn())
+            //getContainerFunction(context, *decl)
         };
         TCC_WARN(logKey, "Stringified qn: '{}'", String(qn));
         return qn;
@@ -1378,7 +1124,8 @@ auto qualifiedNameDRE(TCCManifest &manifest,
     if(auto const *stmt = dre.getExprStmt()) {
         auto qn = TCCKey {
             String(context, dre),
-            getContainerFunction(context, *stmt)
+            std::string(manifest.currentFn())
+            //getContainerFunction(context, *stmt)
         };
         TCC_DEBUG(logKey, "DRE is a stmt without decl, stringifying dre; qn = '{}'", String(qn));
         return qn;
@@ -1386,7 +1133,8 @@ auto qualifiedNameDRE(TCCManifest &manifest,
 
     auto errQn = TCCKey {
         "~dre~err(" + String(context, dre) + ")",
-        getContainerFunction(context, dre)
+        std::string(manifest.currentFn())
+        //getContainerFunction(context, dre)
     };
     TCC_ERROR(logKey, "DRE does not have any valid decl or stmt! qn = '{}'", String(errQn));
     return errQn;
@@ -1399,7 +1147,6 @@ auto qualifiedNameFromPossibleFptrCall(TCCManifest &manifest,
     -> TCCKey {
 
     auto &context = manifest.context();
-    // TODO: add param pos (return + ".$" + to_string(paramPos)
     auto logKey = String(context, call);
     TCC_DEBUG_FN(logKey);
 
@@ -1432,7 +1179,8 @@ auto qualifiedNameFromPossibleFptrCall(TCCManifest &manifest,
     TCC_DEBUG(logKey, "Call expr has no callee, stringifying call");
     auto qn = TCCKey {
         String(context, call),
-        getContainerFunction(context, call)
+        std::string(manifest.currentFn())
+        //getContainerFunction(context, call)
     };
     TCC_DEBUG(logKey, "qn = '{}'", String(qn));
     return qn;
@@ -1606,8 +1354,8 @@ auto makeTCCNodeForDRE(TCCManifest &manifest,
         return {
             {&context, &dre},
             TCCKey {String(context, stmt),
-                //getScope(manifest)},
-                getContainerFunction(context, stmt)},
+                std::string(manifest.currentFn())},
+                //getContainerFunction(context, stmt)},
             String(context, dre),
             Typename(context, dre),
             TypeCategory(dre),
@@ -1675,8 +1423,8 @@ auto makeTCCNodeForBinarySubExpr(TCCManifest &manifest,
         return {
             {&context, &dre},
             TCCKey {String(context, stmt),
-                //getScope(manifest)},
-                getContainerFunction(context, stmt)},
+                std::string(manifest.currentFn())},
+                //getContainerFunction(context, stmt)},
             String(context, dre),
             Typename(context, dre),
             TypeCategory(dre),
@@ -1790,95 +1538,6 @@ auto makeTCCNodeForExpr(TCCManifest &manifest,
         makeTypeMetadata(context, e)
     };
 }
-
-/*
-auto makeTCCNodeForSwitchStmt(TCCManifest &manifest,
-        SwitchStmt const &sw)
-    -> TCCNode {
-
-    auto &context = manifest.context();
-    auto const *cond_ = sw.getCond();
-
-    std::string cond = String(context, *cond_);
-
-    auto const logKey = cond;
-    TCC_DEBUG_FN(logKey);
-    TCC_DEBUG(logKey, "Building TCCNode for switch case: {}", cond);
-
-    auto const qn = "dummy:" + cond;
-    return {
-        {&context, &sw},
-        TCCKey(qn,
-                //getScope(manifest)),
-                getContainerFunction(context, sw)),
-        qn,
-        "bool",
-        "dummy-switch-condition",
-        sourceLocation(sw).printToString(context.getSourceManager()), // check if castexpr is needed
-        {}
-    };
-}
-
-auto makeTCCNodeForSwitchCase(TCCManifest &manifest,
-        SwitchStmt const &sw,
-        SwitchCase const &swc)
-    -> TCCNode {
-
-    auto &context = manifest.context();
-    auto const *cond_ = sw.getCond();
-
-    std::string cond = String(context, *cond_);
-    std::string val;
-    if(auto const *sc = dyn_cast<CaseStmt>(&swc)) {
-        val = String(context, *(sc->getLHS()));
-    }
-    else {
-        val = "default";
-    }
-
-    auto const *tsc = &swc;
-    while(auto const *nc = dyn_cast<SwitchCase>(tsc->getSubStmt())) {
-        // cascading case
-        if(auto const *nsc = dyn_cast<CaseStmt>(nc)) {
-            val += " | " + String(context, *(nsc->getLHS()));
-        }
-        else {
-            val += " | default";
-        }
-        tsc = nc;
-    }
-
-    //std::string val;
-    //for(auto const &swc: swcs) {
-    //    if(auto const *sc = dyn_cast<clang::CaseStmt>(&swc)) {
-    //        val += String(context, *(sc->getLHS())) + " | ";
-    //    }
-    //    else {
-    //        val += "default | ";
-    //    }
-    //}
-    //if(val.size() > 2) {
-    //    val.erase(val.length() - 2, 2);
-    //}
-
-    auto const logKey = cond + "==" + val;
-    TCC_DEBUG_FN(logKey);
-    TCC_DEBUG(logKey, "Building TCCNode for switch case: {}", val);
-
-    auto const qn = "dummy:" + cond + "==" + val;
-    return {
-        {&context, &swc},
-        TCCKey(qn,
-                //getScope(manifest)),
-                getContainerFunction(context, sw)),
-        qn,
-        "bool",
-        "dummy-switch-case",
-        sourceLocation(swc).printToString(context.getSourceManager()), // check if castexpr is needed
-        {}
-    };
-}
-*/
 
 //----------------------
 
