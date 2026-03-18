@@ -38,7 +38,7 @@ namespace tcc {
     public:
         template<Trackable T>
         auto value() const -> std::size_t {
-            if(auto it = types_.find(make_CounterKey<T>()); it != std::end(types_)) {
+            if(auto it = namedTypes_.find(make_CounterKey<T>()); it != std::end(namedTypes_)) {
                 return it->second.count;
             }
             return 0;
@@ -53,7 +53,7 @@ namespace tcc {
 
         template<Trackable T>
         void bump() {
-            ++types_[make_CounterKey<T>()];
+            ++namedTypes_[make_CounterKey<T>()];
         }
 
         void bump(std::string_view key) {
@@ -62,7 +62,7 @@ namespace tcc {
 
         template<Trackable T>
         auto track(std::string label = "") -> Counter& {
-            auto [it, inserted] = types_.emplace(make_CounterKey<T>(), CountedType{});
+            auto [it, inserted] = namedTypes_.emplace(make_CounterKey<T>(), CountedType{});
             if(inserted && !label.empty()) {
                 it->second.label = std::move(label);
             }
@@ -107,13 +107,12 @@ namespace tcc {
         }
         */
         template<Trackable T>
-        static auto make_CounterKey() -> std::type_index {
-            return typeid(T);
+        static auto make_CounterKey() -> std::string {
+            return ASTTypeTraits<T>::TypeName;
         }
+        //std::unordered_map<std::type_index, CountedType> types_;
 
-        std::unordered_map<std::type_index, CountedType> types_;
         std::unordered_map<std::string, CountedType> namedTypes_;
-        //std::unordered_map<CounterKey, std::size_t, CounterHash> namedTypes_;
 
         unsigned count_ = 0;
     };

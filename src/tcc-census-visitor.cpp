@@ -225,7 +225,7 @@ auto TCCCensusVisitor::VisitFunctionDecl(FunctionDecl *fd) -> bool {
     return true;
 }
 
-auto roTCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
+auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     auto const logKey = String(context_, *vd);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *vd) + ">");
 

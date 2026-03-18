@@ -541,6 +541,24 @@ namespace tcc {
         return fn->getNameAsString();
     }
 
+    template<typename T>
+    struct ASTTypeTraits {
+        static char const * TypeName;
+    };
+
 } // namespace tcc end
+
+#define DECLARE_TYPETRAIT_NAME(name) \
+    template<> char const * tcc::ASTTypeTraits<name>::TypeName = #name
+
+DECLARE_TYPETRAIT_NAME(FunctionDecl);
+DECLARE_TYPETRAIT_NAME(VarDecl);
+DECLARE_TYPETRAIT_NAME(Expr);
+DECLARE_TYPETRAIT_NAME(BinaryOperator);
+DECLARE_TYPETRAIT_NAME(CallExpr);
+DECLARE_TYPETRAIT_NAME(CastExpr);
+DECLARE_TYPETRAIT_NAME(MemberExpr);
+DECLARE_TYPETRAIT_NAME(UnaryOperator);
+DECLARE_TYPETRAIT_NAME(SwitchStmt);
 
 #endif // end TCC_UTILS

@@ -3,8 +3,9 @@
 ## Requirements
 
  - libzstd-dev
+ - libfmt-dev (>=11.2)
 
- (v18.0.0 or higher)
+(v18.0.0 or higher):
  - clang
  - libclang-dev
  - llvm-dev
