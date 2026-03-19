@@ -623,22 +623,25 @@ auto TCCCensusVisitor::VisitCastExpr(CastExpr *cast) -> bool {
     auto const logKey = String(context_, *cast);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *cast) + ">");
 
-    VisitExpr(cast->getSubExpr());
-
-    manifest_.SourceCounter.bump<CastExpr>(); // TODO check placement: maybe do after it is confirmed to be bitcast
-    auto src = db_.add(makeTCCNodeForExpr(manifest_, *(cast->getSubExpr())));
-    auto dest = db_.add(makeTCCNodeForExpr(manifest_, *cast));
     if(cast->getCastKind() == CK_LValueToRValue) {
         TCC_DEBUG(logKey, "Skipping implicit LToR cast");
         return true;
     }
-    else if(src == dest && cast->getCastKind() != CK_BitCast) {
+
+    VisitExpr(cast->getSubExpr());
+
+    auto src = db_.add(makeTCCNodeForExpr(manifest_, *(cast->getSubExpr())));
+    auto dest = db_.add(makeTCCNodeForExpr(manifest_, *cast));
+    if(src == dest && cast->getCastKind() != CK_BitCast) {
+            //&& (cast->getCastKind() != CK_BitCast
+            //    || cast->getCastKind() != CK_FunctionToPointerDecay)) {
         TCC_DEBUG(logKey, "Skipping self-provenance in cast visit for cast kind: {}",
                 CastExpr::getCastKindName(cast->getCastKind()));
         return true;
     }
     logUpdate(db_, src, dest);
 
+    manifest_.SourceCounter.bump<CastExpr>(); // TODO check placement: Bitcast v/s Implict v/s ...
     auto ck = cast->getCastKind();
     auto ccKind = CastContext::Kind::ImplicitCast;
     switch(ck) {
@@ -862,7 +865,16 @@ static void append(CastHistories &archive,
     auto contexts = [](std::vector<CastContext> const &ccs) {
         std::string str = "[";
         for(auto const &cc: ccs) {
-            str += cc.id() + "<" + String(cc.kind()) + ">;";
+            str += cc.id() + "<" + String(cc.kind()) + ">;{";
+            for(auto const &[k, v]: cc.data()) {
+                str += k + "==" + v + ",";
+            }
+            if(str.back() == ',') {
+                str.back() = '}';
+            }
+            else {
+                str += "}";
+            }
         }
         return str + "]";
     };
@@ -1029,6 +1041,14 @@ auto qualifiedNameExpr(TCCManifest &manifest,
             return qn;
         }
         TCC_DEBUG(logKey, "DRE is not fptr type: {}", String(context, *dre));
+    }
+    else if(auto const *fd = dyn_cast<FunctionDecl>(dre->getReferencedDeclOfCallee())){
+        TCC_DEBUG(logKey, "Function Decl from DRE: {}", String(context, *fd));
+        // Any operation on function/fptr are non-type changing => qualified name of dre suffices
+        // qn of dre = fn name
+        auto qn = TCCKey {fd->getNameAsString()};
+        TCC_DEBUG(logKey, "QN: {}", String(qn));
+        return qn;
     }
 
     //TCC_DEBUG(logKey, "No decl in dre: {}", String(context, *dre));

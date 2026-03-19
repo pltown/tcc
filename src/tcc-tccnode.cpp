@@ -132,6 +132,9 @@ namespace tcc {
     };
 
     auto String(TCCKey const &k) -> std::string {
+        if(k.prefix().empty()) {
+            return k.id();
+        }
         return k.prefix() + k.tail();
     }
 
