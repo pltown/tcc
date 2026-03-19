@@ -31,11 +31,11 @@ Ensure that the project builds successfully before running the analyzer.
 
 Sample invocation (single source, no compile_commands.json):
 ```sh
-$ bin/tcc-check -v 0 --summary-depth 10 --no-db <source>.cpp
+$ bin/tcc-check -v 0 --no-db <source>.cpp
 ```
 
 For multi-file project, first generate compile_commands.json:
 ```sh
-$ bin/tcc-check -v 0 --summary-depth 10 compile_commands.json [--jobs 1]
+$ bin/tcc-check -v 0 compile_commands.json [--jobs 1]
 ```
 

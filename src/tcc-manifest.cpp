@@ -9,6 +9,7 @@
 #include <clang/AST/AST.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/ASTTypeTraits.h>
 
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/PointerUnion.h>
@@ -79,7 +80,6 @@ namespace tcc {
 
     private:
         struct CountedType {
-            //std::type_index id_;
             std::size_t count;
             std::string label; // maybe move to map value
 
@@ -94,23 +94,11 @@ namespace tcc {
                 return tmp;
             }
         };
-        /*
-        struct CounterHash {
-            auto operator()(CounterKey const &tc) const noexcept -> std::size_t {
-                return std::hash<std::type_index>{}(tc.id_);
-            }
-        };
 
-        template<typename T>
-        static auto make_CounterKey() -> CounterKey {
-            return CounterKey{std::type_index(typeid(T)), typeid(T).name()};
-        }
-        */
         template<Trackable T>
         static auto make_CounterKey() -> std::string {
-            return ASTTypeTraits<T>::TypeName;
+            return std::string(ASTNodeKind::getFromNodeKind<T>().asStringRef());
         }
-        //std::unordered_map<std::type_index, CountedType> types_;
 
         std::unordered_map<std::string, CountedType> namedTypes_;
 
