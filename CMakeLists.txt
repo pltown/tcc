@@ -86,6 +86,22 @@ add_executable(${TCC_EXE}
     ${TCC_SOURCES}
 )
 
+# TODO Make visitor a lib for use with test
+#add_library(TCCAnalyzerLib STATIC
+#    src/tcc-census-visitor.cpp
+#)
+#target_include_directories(TCCAnalyzerLib
+#    PUBLIC
+#    ${CMAKE_CURRENT_SOURCE_DIR}
+#    SYSTEM
+#    ${LLVM_INCLUDE_DIRS}
+#)
+#target_link_libraries(TCCAnalyzerLib PUBLIC
+    #    clang-cpp
+    #    fmt::fmt
+    #)
+
+
 # RTTI compatibility with LLVM
 if (DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
     target_compile_options(${TCC_EXE} PRIVATE -fno-rtti)
@@ -122,3 +138,6 @@ target_link_libraries(${TCC_EXE} PRIVATE
     fmt::fmt
 )
 
+# Tests
+message(STATUS "[TCC] Building tests")
+add_subdirectory(tests)

@@ -165,7 +165,6 @@ namespace tcc {
     private:
         ASTContext &context_;
         std::stack<CastContext> conditions_;
-        Contexts::iterator topConditionContext_;
         llvm::DenseSet<llvm::PointerUnion<Decl const*, Stmt const*>> seenNodes_;
         std::string currentFunction_;
 

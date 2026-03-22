@@ -361,6 +361,10 @@ namespace tcc {
             return nodes_.at(id).tmd_.isUnionType_;
         }
 
+        auto db() const -> TCCNodes const & {
+            return nodes_;
+        }
+
     private:
         TCCNodes nodes_;
     };
