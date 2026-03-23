@@ -76,6 +76,29 @@ add_definitions(${LLVM_DEFINITIONS})
 ##)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin/)
 
+# TCCLIB----------------------------------------------------------
+# Make visitor a lib to use with tests
+set(TCC_LIB "tcclib")
+
+add_library(${TCC_LIB} STATIC
+    src/tcc-census-visitor.cpp
+)
+
+llvm_map_components_to_libnames(LLVM_LIBS support core irreader)
+#target_include_directories(${TCC_LIB}
+#    PUBLIC
+#    ${CMAKE_CURRENT_SOURCE_DIR}
+#    SYSTEM
+#    ${LLVM_INCLUDE_DIRS}
+#)
+target_link_libraries(${TCC_LIB} PUBLIC
+    clang-cpp
+    fmt::fmt
+    ${LLVM_LIBS}
+)
+# end TCCLIB------------------------------------------------------
+
+# TCCEXE----------------------------------------------------------
 set(TCC_SOURCES
     src/main.cpp
 )
@@ -85,22 +108,6 @@ set(TCC_EXE "tcc-check")
 add_executable(${TCC_EXE}
     ${TCC_SOURCES}
 )
-
-# TODO Make visitor a lib for use with test
-#add_library(TCCAnalyzerLib STATIC
-#    src/tcc-census-visitor.cpp
-#)
-#target_include_directories(TCCAnalyzerLib
-#    PUBLIC
-#    ${CMAKE_CURRENT_SOURCE_DIR}
-#    SYSTEM
-#    ${LLVM_INCLUDE_DIRS}
-#)
-#target_link_libraries(TCCAnalyzerLib PUBLIC
-    #    clang-cpp
-    #    fmt::fmt
-    #)
-
 
 # RTTI compatibility with LLVM
 if (DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
@@ -133,11 +140,13 @@ target_link_libraries(${TCC_EXE} PRIVATE
     #clangFrontend
     #clangSerialization
     #clangTooling
+    ${TCC_LIB}
     clang-cpp           # makes other components redundant
     #LLVMSupport
     fmt::fmt
 )
+# end TCCEXE------------------------------------------------------
 
-# Tests
+# TCCTEST---------------------------------------------------------
 message(STATUS "[TCC] Building tests")
 add_subdirectory(tests)
