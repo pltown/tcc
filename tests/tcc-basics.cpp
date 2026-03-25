@@ -122,11 +122,55 @@ SCENARIO("TCC key construction") {
             THEN("Binary expressions are recorded in SSA form") {
                 // TODO: fix binary operations
                 // May not be in this form but current form could be the cause for errors
-                CHECK(results.hasNode(".__i+1__.main.i"));
-                CHECK(results.hasNode(".__i+c__.main.i"));
+                CHECK(results.hasNode(".__i + 1__.main.i"));
+                CHECK(results.hasNode(".__i + c__.main.i"));
             }
         }
 
+    }
+}
+
+SCENARIO("Fptr resolution") {
+    GIVEN("C higher-order function") {
+        auto const *code = R"c(
+            void f(int *pi) {
+                char c = *(char*)pi;
+            }
+            void g(int *pi) {
+                char c = *(char*)pi;
+            }
+            void hof(int *pi, void (*fn)(int*)) {
+                fn(pi);
+            }
+            int main() {
+                int i = 1;
+                hof(&i, f);
+                int j = 2;
+                hof(&j, g);
+                return 0;
+            }
+        )c";
+
+        WHEN("History is built for HoF call") {
+            auto census = analyze(code);
+            TestDB results = std::move(census);
+
+            THEN("HoF arg history should be extended with the correct function") {
+                auto children = [](auto const &key) -> auto {
+                    // append to children till H(key).nexts = 0
+                };
+                auto contains = [](auto const &key) -> auto {
+                    std::set<std::string> children;
+                    // capture history of key
+                    // return a function that checks key's history's children for an input child key
+                };
+
+                // Assert f.$0 is in H(main.i)
+                // Assert g.$0 is not in H(main.i)
+                // Assert f.$0 is not in H(main.j)
+                // Assert g.$0 is in H(main.j)
+            }
+        }
     }
 }
 

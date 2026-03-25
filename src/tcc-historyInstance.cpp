@@ -77,9 +77,11 @@ namespace tcc {
                     continue;
                 }
                 else if(key == sid) {
+                    TCC_DEBUG(logKey, "end: {} = {}", sid, std::string(val));
                     return std::string(val);
                 }
                 else if(key == id.prefix()) {
+                    TCC_DEBUG(logKey, "end: {} = {}", sid, std::string(val) + id.tail());
                     return std::string(val) + id.tail();
                 }
             }

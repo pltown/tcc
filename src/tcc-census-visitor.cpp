@@ -346,21 +346,28 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
         return true;
     }
 
-    if(auto *mex = dyn_cast<MemberExpr>(e)) {
-        return VisitMemberExpr(mex);
-    }
-    else if(auto *uop = dyn_cast<UnaryOperator>(e)) {
-        return VisitUnaryOperator(uop);
-    }
-    else if(auto *bop = dyn_cast<BinaryOperator>(e)) {
+    if(auto *bop = dyn_cast<BinaryOperator>(e)) {
+        TCC_DEBUG(logKey, "Expr is binary operator");
         return VisitBinaryOperator(bop);
     }
-    else if(auto *call = dyn_cast<CallExpr>(e)) {
+    if(auto *mex = dyn_cast<MemberExpr>(e)) {
+        TCC_DEBUG(logKey, "Expr is member expr");
+        return VisitMemberExpr(mex);
+    }
+    if(auto *uop = dyn_cast<UnaryOperator>(e)) {
+        TCC_DEBUG(logKey, "Expr is unary operator");
+        return VisitUnaryOperator(uop);
+    }
+    if(auto *call = dyn_cast<CallExpr>(e)) {
+        TCC_DEBUG(logKey, "Expr is call expr");
         return VisitCallExpr(call);
     }
-    else if(auto *ce = dyn_cast<CastExpr>(e)) {
+    if(auto *ce = dyn_cast<CastExpr>(e)) {
+        TCC_DEBUG(logKey, "Expr is cast expr");
         return VisitCastExpr(ce);
     }
+
+    TCC_DEBUG(logKey, "Expr did not match any expr subtype");
 
     manifest_.markSeen(e);
 
@@ -442,12 +449,14 @@ void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
     auto const logKey = String(context_, *bop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
 
+    /*
     // TODO Check if array
     if(!isPtr(lhs) && !isPtr(rhs)) {
         TCC_DEBUG(logKey, "Skipping: no pointer in either lhs({}) or rhs({})",
                 String(context_, *lhs), String(context_, *rhs));
         return;
     }
+    */
 
     auto const *ldre = getChildFromSub<DeclRefExpr>(lhs);
     auto const *rdre = getChildFromSub<DeclRefExpr>(rhs);
@@ -458,15 +467,23 @@ void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
     }
 
     manifest_.SourceCounter.bump("BinaryOperator-Arithmetic");
-    auto dreToBinaryOp = [&](Expr const *dre) {
+    auto dreToBinaryOp = [&](Expr const *sube) {
         // Use expr instead of dre (expr => bop) as visit expr will take care of dre => expr
-        auto src = db_.add(makeTCCNodeForExpr(manifest_, *dre));
-        auto dest = db_.add(makeTCCNodeForExpr(manifest_, *bop));
+        auto src_ = makeTCCNodeForExpr(manifest_, *sube);
+        //auto src = db_.add(makeTCCNodeForBinaryOpSubExpr(manifest_, *bop, *dre));
+        //auto dest = db_.add(makeTCCNodeForExpr(manifest_, *bop));
+        auto dest_ = makeTCCNodeForExpr(manifest_, *bop);
+        //dest_.id_ = TCCKey(src_.id_.id(), std::string(manifest_.currentFn()), String(context_, *bop));
+        auto src = db_.add(std::move(src_));
+        auto dest = db_.add(std::move(dest_));
         logUpdate(db_, src, dest);
 
         auto label = std::string(bop->getOpcodeStr()) + "(" + src + ")";
         auto scope = db_.getTCCKey(dest).scope();
-        CastContext firstContext(CastContext::Kind::PointerArithmetic, label, scope);
+        CastContext firstContext;
+        if(isPtr(sube)) {
+            firstContext = {CastContext::Kind::PointerArithmetic, label, scope};
+        }
         //TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
         auto cc = manifest_.conditionContext();
         if(cc.empty()) {
@@ -481,10 +498,10 @@ void TCCCensusVisitor::handleBinaryArithmetic(BinaryOperator const *bop,
     };
 
     // If two ptrs are involved, both ptrs' histories involve bop
-    if(isPtr(lhs) && ldre) {
+    if(/*isPtr(lhs) &&*/ ldre) {
         dreToBinaryOp(lhs);
     }
-    if(isPtr(rhs) && rdre) {
+    if(/*isPtr(rhs) &&*/ rdre) {
         dreToBinaryOp(rhs);
     }
 }
@@ -549,6 +566,9 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
     auto const *fn = getCalleeDecl(context_, *call);
     if(!fn) {
         TCC_DEBUG(logKey, "Cannot get function decl from callexpr; checking for fptr decl");
+        // TODO: fptr id: callexpr->ImplicitCast------->DeclRefExpr
+        //       function           (Fn to ptr decay)   (lvalue function)
+        //       fptr               (lvalue to rvalue)  (lvalue ParmVar)
         // likely a fptr that is unresolved at the moment
         // TODO: // fptr(args...) --> <fptr-qn>(<argqn>..) --> Done?
         if(auto const *fptrDRE = getFptrFromFptrCall(context_, *call)) {
@@ -1022,6 +1042,30 @@ auto qualifiedNameExpr(TCCManifest &manifest,
 
     auto const *dre = getChild<DeclRefExpr>(e);
     if(!dre) {
+        if(auto const *bop = dyn_cast<BinaryOperator>(&e)) {
+            TCC_DEBUG(logKey, "Expr is binary op, checking lhs, rhs subexprs");
+            auto const *ldre = getChild<DeclRefExpr>(*(bop->getLHS()));
+            auto const *rdre = getChild<DeclRefExpr>(*(bop->getRHS()));
+            std::string id;
+            if(ldre) {
+                TCC_DEBUG(logKey, "Found lhs DRE");
+                id = String(context, *ldre);
+            }
+            else if(rdre) {
+                TCC_DEBUG(logKey, "Found rhs DRE");
+                id = String(context, *rdre);
+            }
+            if(!id.empty()) {
+                auto qn = TCCKey{
+                    id,
+                    std::string(manifest.currentFn()),
+                    String(context, e)
+                };
+                TCC_DEBUG(logKey, "QN: {}", String(qn));
+                return qn;
+            }
+        }
+
         TCC_DEBUG(logKey, "No DRE in expression, stringifying expr for qn");
         auto qn = TCCKey{"#lit/" + String(context, e) + "/"};
         TCC_DEBUG(logKey, "QN: {}", String(qn));
