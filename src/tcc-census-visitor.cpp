@@ -209,9 +209,14 @@ auto TCCCensusVisitor::TraverseFunctionDecl(FunctionDecl *fd) -> bool {
         return true;
     }
 
+    if(manifest_.isSeen(fd)) {
+        TCC_DEBUG(logKey, "Skipping: Already seen.");
+        return true;
+    }
+
+    manifest_.markSeen({fd});
     ManifestFunctionUpdater mark(manifest_, fd);
     rc = TraverseCompoundStmt(dyn_cast<CompoundStmt>(fd->getBody()));
-    manifest_.markSeen({fd});
     //manifest_.resetCurrentFn();
     return rc;
 }
@@ -229,6 +234,12 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     auto const logKey = String(context_, *vd);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *vd) + ">");
 
+    if(manifest_.isSeen(vd)) {
+        TCC_DEBUG(logKey, "Skipping: Already seen.");
+        return true;
+    }
+    manifest_.markSeen(vd);
+
     if(vd->hasInit()) {
         VisitExpr(vd->getInit());
 
@@ -240,7 +251,6 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
         trackAssignment(std::move(src), std::move(dest));
     }
     TCC_DEBUG(logKey, "Skipping: No init");
-    manifest_.markSeen(vd);
 
     return true;
 }
@@ -284,6 +294,12 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
 
     auto *cond_ = ss->getCond();
     //VisitExpr(cond_);
+
+    if(manifest_.isSeen(ss)) {
+        TCC_DEBUG(logKey, "Skipping: Already seen.");
+        return true;
+    }
+    manifest_.markSeen(ss);
 
     manifest_.SourceCounter.bump<SwitchStmt>();
 
@@ -346,6 +362,8 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
         return true;
     }
 
+    manifest_.markSeen(e);
+
     if(auto *bop = dyn_cast<BinaryOperator>(e)) {
         TCC_DEBUG(logKey, "Expr is binary operator");
         return VisitBinaryOperator(bop);
@@ -368,8 +386,6 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
     }
 
     TCC_DEBUG(logKey, "Expr did not match any expr subtype");
-
-    manifest_.markSeen(e);
 
     return true;
 }
