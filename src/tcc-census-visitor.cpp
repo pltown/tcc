@@ -624,23 +624,27 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
         TCC_DEBUG(logKey, "Skipping: builtin function");
         return true;
     }
-    else {
-        manifest_.SourceCounter.bump<CallExpr>();
-        //handleFunctionCall(call, fn);
-        auto fname = String(context_, *fn);
-        CastContext firstContext(CastContext::Kind::FunctionCall, String(context_, *call), fname);
 
-        std::size_t pos = 0;
-        std::for_each(call->arg_begin(), call->arg_end(),
-            [&](auto *arg) {
-                processArg(*arg, firstContext, pos++);
-            });
-        TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
-        for(auto const &[src, dest]: argHistories) {
-            logUpdate(db_, src, dest);
-            append(hdb_, src, TypeProvenanceConstraint({src, dest}, cc));
-            append(hdb_, dest);
-        }
+    if(fn->isVariadic()) {
+        TCC_DEBUG(logKey, "Callee is variadic and not yet supported!");
+        return true;
+    }
+
+    manifest_.SourceCounter.bump<CallExpr>();
+    //handleFunctionCall(call, fn);
+    auto fname = String(context_, *fn);
+    CastContext firstContext(CastContext::Kind::FunctionCall, String(context_, *call), fname);
+
+    std::size_t pos = 0;
+    std::for_each(call->arg_begin(), call->arg_end(),
+        [&](auto *arg) {
+            processArg(*arg, firstContext, pos++);
+        });
+    TypeProvenanceConstraint::Contexts cc(1, std::move(firstContext));
+    for(auto const &[src, dest]: argHistories) {
+        logUpdate(db_, src, dest);
+        append(hdb_, src, TypeProvenanceConstraint({src, dest}, cc));
+        append(hdb_, dest);
     }
 
     return true;
