@@ -98,6 +98,7 @@ namespace tcc {
 
         //auto TraverseCompoundStmt(CompoundStmt *cs) -> bool;
         auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
+        auto VisitStmt(Stmt *s) -> bool;
 
         auto VisitExpr(Expr *e) -> bool;
         auto VisitBinaryOperator(BinaryOperator *bop) -> bool;
@@ -349,6 +350,23 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
 
         scl = tsc->getNextSwitchCase();
     }
+    return true;
+}
+
+auto TCCCensusVisitor::VisitStmt(Stmt *s) -> bool {
+    // Ensure statements not handled by VisitExpr are marked seen.
+    //manifest_.SourceCounter.bump<Expr>();
+    auto const logKey = String(context_, *s);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *s) + ">");
+
+    /*
+    if(manifest_.isSeen(s)) {
+        TCC_DEBUG(logKey, "Skipping: Already seen.");
+        return true;
+    }
+    */
+    manifest_.markSeen(s);
+
     return true;
 }
 
