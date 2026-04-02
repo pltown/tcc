@@ -39,6 +39,14 @@ static auto const *cComplete = R"c(
     }
 )c";
 
+auto nodeInfos(TCCNodesDB const &nodes) -> std::string {
+    std::string info;
+    for(auto const &[k, v]: nodes.db()) {
+        info += k + " = " + String(v) + "\n";
+    }
+    return info;
+}
+
 void display(TCCNodesDB const &nodes) {
     fmt::print(stdout, "TCCNodes:\n");
     for(auto const &[k, v]: nodes.db()) {
@@ -79,7 +87,7 @@ SCENARIO("TCC key construction") {
             auto census = analyze(code);
             TestDB results = std::move(census);
 
-            display(results.nodes_);
+            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
 
             THEN("All parameter keys should be in SSA form") {
                 CHECK_FALSE(results.hasNode("i"));
@@ -127,7 +135,7 @@ SCENARIO("TCC key construction") {
             auto census = analyze(code);
             TestDB results = std::move(census);
 
-            display(results.nodes_);
+            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
 
             THEN("Unary expressions are recorded in SSA form") {
                 CHECK(results.hasNode(".__&i__.main.i"));
@@ -223,6 +231,8 @@ SCENARIO("Conditional-cast") {
             TestDB results = std::move(census);
             results.makeInstances();
 
+            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+
             THEN("condition for a cast should be part of its history") {
                 // Check that history is instantiated for flaggedOp.$0
                 REQUIRE(results.hasInstance("flaggedOp.$0"));
@@ -234,6 +244,8 @@ SCENARIO("Conditional-cast") {
                 REQUIRE(c1.has_value());
                 //  under condition context flag == 0
                 CHECK(hasContext(*c1, "flag == 0"));
+                // and not under condition flag == 1;
+                CHECK_FALSE(hasContext(*c1, "flag == 1"));
                 //if(c.kind == tcc::CastContext::SwitchCondition) {
 
 
@@ -242,6 +254,8 @@ SCENARIO("Conditional-cast") {
                 REQUIRE(c2.has_value());
                 // under condition context flag == 1
                 CHECK(hasContext(*c2, "flag == 1"));
+                // and not under condition flag == 0;
+                CHECK_FALSE(hasContext(*c2, "flag == 0"));
 
                 // Check casts with scattered condition (interprocedural cast)
             }

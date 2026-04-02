@@ -335,7 +335,8 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
         //CastContext cc(ck, cond + " == " + val, getContainerFunction(context_, *ss));
         TCC_DEBUG(logKey, "Pushing context to manifest for: {} == {}", cond, val);
         manifest_.pushConditionContext(cc);
-        //TraverseCompoundStmt(dyn_cast<CompoundStmt>(tsc->getSubStmt()));
+        TraverseCompoundStmt(dyn_cast<CompoundStmt>(tsc->getSubStmt()));
+        /*
         for(auto *schild: tsc->getSubStmt()->children()) {
             if(auto *se = dyn_cast<Expr>(schild)) {
                 TCC_DEBUG(logKey, "Next visit: {}", String(context_, *se));
@@ -346,6 +347,7 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
                 TraverseStmt(schild);
             }
         }
+        */
         TCC_DEBUG(logKey, "Popping context from manifest for: {} == {}", cond, val);
         manifest_.popConditionContext();
 
@@ -360,12 +362,16 @@ auto TCCCensusVisitor::VisitStmt(Stmt *s) -> bool {
     auto const logKey = String(context_, *s);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *s) + ">");
 
-    /*
     if(manifest_.isSeen(s)) {
         TCC_DEBUG(logKey, "Skipping: Already seen.");
         return true;
     }
-    */
+
+    if(auto *ss = dyn_cast<SwitchStmt>(s)) {
+        TCC_DEBUG(logKey, "Stmt is SwitchStmt");
+        return VisitSwitchStmt(ss);
+    }
+
     manifest_.markSeen(s);
 
     return true;
@@ -380,8 +386,6 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
         TCC_DEBUG(logKey, "Skipping: Already seen.");
         return true;
     }
-
-    manifest_.markSeen(e);
 
     if(auto *bop = dyn_cast<BinaryOperator>(e)) {
         TCC_DEBUG(logKey, "Expr is binary operator");
@@ -405,6 +409,8 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
     }
 
     TCC_DEBUG(logKey, "Expr did not match any expr subtype");
+
+    manifest_.markSeen(e);
 
     return true;
 }
