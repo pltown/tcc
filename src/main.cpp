@@ -17,8 +17,6 @@
 #include <future>
 #include <fstream>
 #include <stack>
-#include <algorithm>
-#include <execution>
 #include <mutex>
 
 using namespace clang::tooling;
@@ -129,29 +127,6 @@ auto main(int argc, const char **argv) -> int {
 }
 
 //using TCCContext = TCCMatchData;
-
-void instantiateHistories(TCCStore const &store,
-        std::unordered_map<std::string, CastHistoryInstance> &historyInstances) {
-    constexpr auto logKey = "Instantiation";
-
-    std::mutex m;
-    auto const &tdb = store.db();
-    auto const &hdb = store.hdb();
-    std::for_each(std::execution::par, cbegin(hdb), cend(hdb),
-        [&](auto const &node) {
-            auto hi_ = instantiate(store, node.second);
-            if(!hi_) {
-                TCC_ERROR(logKey, "[{}] Instantiation failed", node.first);
-                return;
-            }
-            auto hi = hi_.value();
-            std::lock_guard<std::mutex> guard(m);
-            if(!historyInstances.insert({node.first, std::move(hi)}).second) {
-                TCC_ERROR(logKey, "[{}] Instance insertion failed", node.first);
-            }
-            TCC_DEBUG(logKey, "[{}] Completed instantiation", node.first);
-        });
-}
 
 void printHistories(TCCStore const &tdb,
         std::unordered_map<std::string, CastHistoryInstance> const &instances) {

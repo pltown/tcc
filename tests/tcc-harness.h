@@ -6,6 +6,8 @@
 #include "../src/tcc-census-visitor.cpp"
 
 #include <clang/Tooling/Tooling.h>
+
+#include <stack>
 #include <iostream>
 
 using namespace tcc;
@@ -71,14 +73,51 @@ struct TestDB {
     using KeyRef = TCCNode::KeyRef;
 
     TestDB(TCCCollection &&results):
-        nodes_(std::move(get<0>(results))),
-        histories_(std::move(get<1>(results))) {}
+        census(std::move(get<0>(results)),
+                std::move(get<1>(results))),
+        nodes_(census.db()),
+        histories_(census.hdb()) {}
 
-    TCCNodesDB nodes_;
-    CastHistories histories_;
+    TCCStore census;
+    TCCNodesDB const &nodes_;
+    CastHistories const &histories_;
+    std::unordered_map<std::string, CastHistoryInstance> instances_;
 
     auto hasNode(KeyRef const &key) -> bool {
         return nodes_.contains(key);
+    }
+
+    void makeInstances() {
+        instantiateHistories(census, instances_);
+    }
+
+    auto hasInstance(KeyRef const &key) -> bool {
+        return instances_.contains(key);
+    }
+
+    auto instanceFinderFor(KeyRef const &root) {
+        return [this, root](KeyRef const &key) -> std::optional<CastHistoryInstance> {
+            if(!hasInstance(root)) {
+                fmt::print(stdout, "[ERROR] No history instance for {}\n", root);
+                return {};
+            }
+
+            std::stack<CastHistoryInstance> unseen;
+            unseen.push(instances_.at(root));
+            while(!unseen.empty()) {
+                auto top = std::move(unseen.top());
+                unseen.pop();
+
+                if(top.id() == key) {
+                    return top;
+                }
+
+                for(auto const &n: top.nexts()) {
+                    unseen.push(n);
+                }
+            }
+            return {};
+        };
     }
 
     /*

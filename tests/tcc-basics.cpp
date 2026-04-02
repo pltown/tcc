@@ -39,6 +39,22 @@ static auto const *cComplete = R"c(
     }
 )c";
 
+void display(TCCNodesDB const &nodes) {
+    fmt::print(stdout, "TCCNodes:\n");
+    for(auto const &[k, v]: nodes.db()) {
+        fmt::print(stdout, "{} = {{{}}}\n", k, String(v));
+    }
+}
+
+auto hasContext(CastHistoryInstance const &chi, std::string_view cid) -> bool {
+    for(auto const &c: chi.context()) {
+        if(c.id() == cid) {
+            return true;
+        }
+    }
+    return false;
+}
+
 SCENARIO("TCC key construction") {
     GIVEN("A C code with functions and assignments") {
         // At least one non-main function, one global variable
@@ -62,6 +78,8 @@ SCENARIO("TCC key construction") {
         WHEN("Aliasing or aliased declarations are visited") {
             auto census = analyze(code);
             TestDB results = std::move(census);
+
+            display(results.nodes_);
 
             THEN("All parameter keys should be in SSA form") {
                 CHECK_FALSE(results.hasNode("i"));
@@ -109,10 +127,7 @@ SCENARIO("TCC key construction") {
             auto census = analyze(code);
             TestDB results = std::move(census);
 
-            fmt::print(stdout, "TCCNodes:\n");
-            for(auto const &[k, v]: results.nodes_.db()) {
-                fmt::print(stdout, "{} = {{{}}}\n", k, String(v));
-            }
+            display(results.nodes_);
 
             THEN("Unary expressions are recorded in SSA form") {
                 CHECK(results.hasNode(".__&i__.main.i"));
@@ -169,6 +184,66 @@ SCENARIO("Fptr resolution") {
                 // Assert g.$0 is not in H(main.i)
                 // Assert f.$0 is not in H(main.j)
                 // Assert g.$0 is in H(main.j)
+            }
+        }
+    }
+}
+
+SCENARIO("Conditional-cast") {
+    GIVEN("A condition-based cast") {
+        auto const *code = R"c(
+            int flag = 0;
+            void flaggedOp(void *pv) {
+                int *i = 0;
+                char *c = 0;
+                switch(flag) {
+                    case 0: {
+                        i = (int*) pv;
+                        *i = *i + 1;
+                        break;
+                    }
+                    case 1: {
+                        c = (char*) pv;
+                        *c = 'a';
+                        //printf("%c", *c);
+                        break;
+                    }
+                }
+            }
+
+            int main() {
+                int x = 1;
+                flaggedOp(&x);
+                return 0;
+            }
+        )c";
+
+        WHEN("cast history is instantiated") {
+            auto census = analyze(code);
+            TestDB results = std::move(census);
+            results.makeInstances();
+
+            THEN("condition for a cast should be part of its history") {
+                // Check that history is instantiated for flaggedOp.$0
+                REQUIRE(results.hasInstance("flaggedOp.$0"));
+                REQUIRE(results.instances_.at("flaggedOp.$0").nexts().empty() == false);
+
+                // Check that history has flaggedOp.$0 => int*
+                auto instFlaggedOp = results.instanceFinderFor("flaggedOp.$0");
+                auto c1 = instFlaggedOp("flaggedOp.i");
+                REQUIRE(c1.has_value());
+                //  under condition context flag == 0
+                CHECK(hasContext(*c1, "flag == 0"));
+                //if(c.kind == tcc::CastContext::SwitchCondition) {
+
+
+                // Check that history has flaggedOp.$0 => char*
+                auto c2 = instFlaggedOp("flaggedOp.c");
+                REQUIRE(c2.has_value());
+                // under condition context flag == 1
+                CHECK(hasContext(*c2, "flag == 1"));
+
+                // Check casts with scattered condition (interprocedural cast)
             }
         }
     }
