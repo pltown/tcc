@@ -96,7 +96,6 @@ namespace tcc {
 
         auto VisitVarDecl(VarDecl *vd) -> bool;
 
-        //auto TraverseCompoundStmt(CompoundStmt *cs) -> bool;
         auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
         auto VisitStmt(Stmt *s) -> bool;
 
@@ -243,8 +242,6 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     manifest_.markSeen(vd);
 
     if(vd->hasInit()) {
-        VisitExpr(vd->getInit());
-
         manifest_.SourceCounter.bump<VarDecl>();
         auto const *init = vd->getInit();
 
@@ -257,45 +254,11 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
     return true;
 }
 
-/*
-auto TCCCensusVisitor::TraverseCompoundStmt(CompoundStmt *cs) -> bool {
-    auto const logKey = "Body <@" + stringLocation(context_, *cs) + ">";
-    // covers ALL braced bodies
-
-    for(auto *child: cs->body()) {
-        if(auto *sw = dyn_cast<SwitchStmt>(child)) {
-            VisitSwitchStmt(sw);
-            //if(!VisitSwitchStmt(sw)) {
-            //    TCC_ERROR(logKey, "Visit error at <switch> @<{}>", stringLocation(context_, *sw));
-            //    return false;
-            //}
-        }
-        else if(auto *e = dyn_cast<Expr>(child)) {
-            VisitExpr(e);
-            //if(!VisitExpr(e)) {
-            //    TCC_ERROR(logKey, "<expr> @<{}>", stringLocation(context_, *e));
-            //    return false;
-            //}
-        }
-        else if(auto *stmt = dyn_cast<Stmt>(child)) {
-            TraverseStmt(stmt);
-            //if(!VisitStmt(stmt)) {
-            //    TCC_ERROR(logKey, "<stmt> @<{}>", stringLocation(context_, *stmt));
-            //    return false;
-            //}
-        }
-    }
-
-    return true;
-}
-*/
-
 auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
     auto const logKey = String(context_, *(ss->getCond()));
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *ss) + ">");
 
     auto *cond_ = ss->getCond();
-    //VisitExpr(cond_);
 
     if(manifest_.isSeen(ss)) {
         TCC_DEBUG(logKey, "Skipping: Already seen.");
@@ -354,18 +317,6 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
         else {
             TraverseStmt(tsc->getSubStmt());
         }
-        /*
-        for(auto *schild: tsc->getSubStmt()->children()) {
-            if(auto *se = dyn_cast<Expr>(schild)) {
-                TCC_DEBUG(logKey, "Next visit: {}", String(context_, *se));
-                VisitExpr(se);
-            }
-            else {
-                TCC_DEBUG(logKey, "Next visit: {}", String(context_, *schild));
-                TraverseStmt(schild);
-            }
-        }
-        */
         TCC_DEBUG(logKey, "Popping context from manifest for: {} == {}", cond, val);
         manifest_.popConditionContext();
 
@@ -438,9 +389,6 @@ auto TCCCensusVisitor::VisitExpr(Expr *e) -> bool {
 auto TCCCensusVisitor::VisitBinaryOperator(BinaryOperator *bop) -> bool {
     auto const logKey = String(context_, *bop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *bop) + ">");
-
-    VisitExpr(bop->getLHS());
-    VisitExpr(bop->getRHS());
 
     if(bop->isAssignmentOp()) {
         manifest_.SourceCounter.bump<BinaryOperator>();
@@ -606,8 +554,6 @@ auto TCCCensusVisitor::VisitCallExpr(CallExpr *call) -> bool {
             CastContext &cc,
             std::size_t pos) {
 
-        VisitExpr(&arg); // TODO improve?
-
         TCC_DEBUG(logKey, "Building lhs(arg) for '{}'", String(context_, arg));
         auto src = db_.add(makeTCCNodeForExpr(manifest_, arg));
         auto dest = db_.add(makeTCCNodeForParamFromCall(manifest_, *call, pos));
@@ -713,8 +659,6 @@ auto TCCCensusVisitor::VisitCastExpr(CastExpr *cast) -> bool {
         return true;
     }
 
-    VisitExpr(cast->getSubExpr());
-
     auto src = db_.add(makeTCCNodeForExpr(manifest_, *(cast->getSubExpr())));
     auto dest = db_.add(makeTCCNodeForExpr(manifest_, *cast));
     if(src == dest && cast->getCastKind() != CK_BitCast) {
@@ -790,9 +734,6 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
     auto const logKey = String(context_, *mex);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *mex) + ">");
 
-    //memberdecl? Maybe not
-    VisitExpr(mex->getBase());
-
     // unnamed member is seen as follows
     //  s->s_type | s => s_type
     //  s->s_ints | base: s->   | S => s_ints
@@ -860,8 +801,6 @@ auto TCCCensusVisitor::VisitMemberExpr(MemberExpr *mex) -> bool {
 auto TCCCensusVisitor::VisitUnaryOperator(UnaryOperator *uop) -> bool {
     auto const logKey = String(context_, *uop);
     TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *uop) + ">");
-
-    VisitExpr(uop->getSubExpr());
 
     manifest_.SourceCounter.bump<UnaryOperator>();
     auto op = UnaryOperator::getOpcodeStr(uop->getOpcode());
