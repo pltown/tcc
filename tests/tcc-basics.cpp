@@ -210,7 +210,8 @@ SCENARIO("Conditional-cast") {
                         *i = *i + 1;
                         break;
                     }
-                    case 1: {
+                    case 1:
+                    case 2: {
                         c = (char*) pv;
                         *c = 'a';
                         //printf("%c", *c);
@@ -253,7 +254,7 @@ SCENARIO("Conditional-cast") {
                 auto c2 = instFlaggedOp("flaggedOp.c");
                 REQUIRE(c2.has_value());
                 // under condition context flag == 1
-                CHECK(hasContext(*c2, "flag == 1"));
+                CHECK(hasContext(*c2, "flag == 1 | 2"));
                 // and not under condition flag == 0;
                 CHECK_FALSE(hasContext(*c2, "flag == 0"));
 

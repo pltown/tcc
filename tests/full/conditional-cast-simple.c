@@ -9,7 +9,8 @@ void flaggedOp(void *pv) {
             *i = *i + 1;
             break;
         }
-        case 1: {
+        case 1:
+        case 2: {
             c = (char*) pv;
             *c = 'a';
             //printf("%c", *c);

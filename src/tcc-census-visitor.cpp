@@ -311,13 +311,26 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
 
     std::string val;
     auto * scl = ss->getSwitchCaseList();
+    // Last case is seen first; probably reverse is needed
+    std::stack<SwitchCase*> cases;
     while(scl) {
+        cases.push(scl);
+        scl = scl->getNextSwitchCase();
+    }
+
+    while(!cases.empty()) {
+    //while(scl) {
+        scl = cases.top();
+        cases.pop();
+        TCC_DEBUG(logKey, "Current case: {}", String(context_, *scl));
+
         if(auto const *ssc = dyn_cast<CaseStmt>(scl)) {
             val = String(context_, *(ssc->getLHS()));
         }
         else {
             val = "default";
         }
+        TCC_DEBUG(logKey, "Current case val: {}", val);
 
         auto *tsc = scl;
         while(auto *nc = dyn_cast<SwitchCase>(tsc->getSubStmt())) {
@@ -335,7 +348,12 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
         //CastContext cc(ck, cond + " == " + val, getContainerFunction(context_, *ss));
         TCC_DEBUG(logKey, "Pushing context to manifest for: {} == {}", cond, val);
         manifest_.pushConditionContext(cc);
-        TraverseCompoundStmt(dyn_cast<CompoundStmt>(tsc->getSubStmt()));
+        if(auto *cst = dyn_cast<CompoundStmt>(tsc->getSubStmt())) {
+            TraverseCompoundStmt(cst);
+        }
+        else {
+            TraverseStmt(tsc->getSubStmt());
+        }
         /*
         for(auto *schild: tsc->getSubStmt()->children()) {
             if(auto *se = dyn_cast<Expr>(schild)) {
@@ -351,7 +369,9 @@ auto TCCCensusVisitor::VisitSwitchStmt(SwitchStmt *ss) -> bool {
         TCC_DEBUG(logKey, "Popping context from manifest for: {} == {}", cond, val);
         manifest_.popConditionContext();
 
-        scl = tsc->getNextSwitchCase();
+        //scl = scl->getNextSwitchCase();
+        //if(scl)
+        //    TCC_DEBUG(logKey, "Next case: {}", String(context_, *scl));
     }
     return true;
 }
