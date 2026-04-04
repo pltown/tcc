@@ -309,40 +309,36 @@ namespace tcc {
             TypeProvenanceConstraint const &constraint;
             size_t branchIdx = 0;
             std::vector<CastHistoryInstance> nexts = {};
+            std::stack<CastContext> gcc;
         };
 
         std::optional<CastHistoryInstance> out;
-        std::stack<CastContext> gcc;
         std::stack<Frame> stack;
         std::unordered_map<std::string, bool> seen;
 
-        // 1. make global context stack that changes with dfs
-        auto instanceContext = [&gcc_=gcc]() -> ExtendedCastContext {
-            auto gcc = gcc_;
-            TCC_DEBUG("instanceContext", "Current context stack size: {}", gcc.size());
+        // 1. Make frame context which is the extended cast context for current instance
+        auto frameContext = [](std::stack<CastContext> &gcc) -> ExtendedCastContext {
+            TCC_DEBUG("frameContext", "Current context stack size: {}", gcc.size());
             ExtendedCastContext ecc;
             ecc.reserve(gcc.size());
             while(!gcc.empty()) {
                 ecc.push_back(gcc.top());
                 gcc.pop();
             }
-            TCC_DEBUG("instanceContext", "Created context: {}", String(ecc));
+            TCC_DEBUG("frameContext", "Created context: {}", String(ecc));
             return ecc;
         };
 
         auto instantiateAndPop = [&]() {
-            auto &&frame = stack.top();
-            auto &[constraint, _, children] = frame;
-            //auto &&[constraint, _, children] = stack.top();
+            auto &[constraint, _, children, gcc] = stack.top();
             auto leafKey = constraint.child();
             auto tops = String(constraint);
 
-            // instantiate history
             TCC_DEBUG(logKey, "(pop)[Top= {}]", tops);
             //llvm::outs() << "(pop)[Top= {" << tops << "}]\n";
 
-            // 2. instantiate using the context stack
-            auto instance = makeCastHistoryInstance(tdb, instanceContext(), leafKey, constraint);
+            // 2. instantiate history using the frame context
+            auto instance = makeCastHistoryInstance(tdb, frameContext(gcc), leafKey, constraint);
 
             // add to stack if not seen TODO (must be done before pop)
             auto next = instance.resolution(tdb);
@@ -355,8 +351,7 @@ namespace tcc {
                     stack.pop();
                 }
                 stack.push(frame);
-                stack.push(Frame(instance.substitution(tdb), 0, {}));
-                gcc.push({});
+                stack.push(Frame(instance.substitution(tdb), 0, {}, gcc));
                 return;
             }
             */
@@ -376,11 +371,7 @@ namespace tcc {
             if(!stack.empty()) {
                 // destroy frame
                 stack.pop();
-                if(!gcc.empty()) {
-                    TCC_DEBUG(logKey, "(pop)[gccTop= {}] Destroying gcc top frame", String(gcc.top()));
-                    gcc.pop();
-                }
-                TCC_DEBUG(logKey, "(pop)[Top= <unk>] Destroying top frame: {}", tops);
+                TCC_DEBUG(logKey, "(pop)[Top= <unk>] Destroyed top frame: {}", tops);
                 //llvm::outs() << "(pop) Destroyed top frame" << "\n";
             }
 
@@ -395,11 +386,6 @@ namespace tcc {
                 TCC_DEBUG(logKey, "(pop)[Top= []] Finished stack, setting frame out: {}", instance.id());
                 //llvm::outs() << "(pop) Finished stack, setting frame out:" << instance.id() << "\n";
                 out = std::move(instance);
-                TCC_DEBUG(logKey, "(pop)[Top= []] Draining gcc stack");
-                while(!gcc.empty()) {
-                    TCC_DEBUG(logKey, "(pop)[gccTop= {}] gccPop()", String(gcc.top()));
-                    gcc.pop();
-                }
             }
         };
 
@@ -409,15 +395,14 @@ namespace tcc {
         TypeProvenanceConstraint starter({"<Dummy>", h.id()});
         Frame init(starter);
         stack.push(init);
-        gcc.push({});
 
         //llvm::outs() << "[Instantiation] id | " << h.id() << "\n";
 
         auto const &historyDB = tdb.hdb();
         while(!stack.empty()) {
-            auto &[topConstraint, pos, _] = stack.top();
+            auto &[topConstraint, pos, _, gcc] = stack.top();
             auto strTop = String(topConstraint);
-            seen[strTop] = true;    // there may be duplicate constraints on same history
+            seen[strTop] = true;    // there may be duplicate constraints on same history (TODO check if removable)
             TCC_DEBUG(logKey, "(stack)[Top= {}] Mark seen", strTop);
             //llvm::outs() << "(stack) seen = true | " << strTop << "\n";
 
@@ -430,11 +415,6 @@ namespace tcc {
 
                 //instantiateAndPop();
                 stack.pop();
-                TCC_DEBUG(logKey, "(stack)[Top= []] Draining gcc stack");
-                if(!gcc.empty()) {
-                    TCC_DEBUG(logKey, "(pop)[gccTop= {}] gccPop()", String(gcc.top()));
-                    gcc.pop();
-                }
                 continue;
             }
 
@@ -452,14 +432,15 @@ namespace tcc {
                 //llvm::outs() << "(stack) pos = " << pos << "; remaining = " << constraints.size() << "\n";
                 //llvm::outs() << "(stack) next = " << String(nextTop) << "\n";
                 if(!seen[String(nextTop)]) {
-                    stack.push({nextTop, 0, {}});
-                    auto const &[newTop, _, __] = stack.top();
-                    TCC_DEBUG(logKey, "(stack)[Top= {}] Updated stack", String(newTop));
-                    //TCC_DEBUG(logKey, "(stack)[Top= {}] Updating context stack with '{}'", strTop, String(newTop.context()));
-                    //gcc.push(nextTop.context());
+                    // Update frame context with current
+                    std::stack<CastContext> fgcc = gcc;
                     for(auto const &c: nextTop.context()) {
-                        gcc.push(c);
+                        fgcc.push(c);
                     }
+
+                    stack.push({nextTop, 0, {}, fgcc});
+                    auto const &[newTop, _, __, ___] = stack.top();
+                    TCC_DEBUG(logKey, "(stack)[Top= {}] Updated stack", String(newTop));
                 }
             }
             else {
