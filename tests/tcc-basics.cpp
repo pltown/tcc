@@ -197,6 +197,69 @@ SCENARIO("Fptr resolution") {
     }
 }
 
+SCENARIO("Function-return-alias") {
+    GIVEN("An assignment involving a function call") {
+        auto const *code = R"c(
+            int* f(void *pi) {
+                return (int*)pi;
+            }
+
+            int* g(int *pa, int *pb) {
+                return pa;
+            }
+
+            int h(void *pa, int *pb) {
+                return *(int*)pa + *pb;
+            }
+
+            int main() {
+                int i = 0;
+                int *j = f(&i);
+                int *k = g(&i, j);
+                int l = h(&i, j);
+
+                return 0;
+            }
+        )c";
+
+        WHEN("cast history is instantiated") {
+            auto census = analyze(code);
+            TestDB results = std::move(census);
+            results.makeInstances();
+
+            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+
+            THEN("function return should be in history of variable aliasing the return") {
+                REQUIRE(results.hasInstance("f.$@"));
+                REQUIRE(results.hasInstance("g.$@"));
+
+                // Check that i's history includes f & j
+                auto historyOfI_isExtendedBy = results.instanceFinderFor("main.i");
+                CHECK(historyOfI_isExtendedBy("f.$@"));
+                CHECK(historyOfI_isExtendedBy("main.j"));
+
+                // Ensure i dominates j via f
+                auto historyOfFReturn_isExtendedBy = results.instanceFinderFor("f.$@");
+                CHECK(historyOfFReturn_isExtendedBy("main.j"));
+
+                // Check that i's history includes k
+                CHECK(historyOfI_isExtendedBy("main.k"));
+
+                auto historyOfGReturn_isExtendedBy = results.instanceFinderFor("g.$@");
+                CHECK(historyOfGReturn_isExtendedBy("main.k"));
+
+                // Ensure that cast/pointer operation in return is accounted for
+                CHECK(historyOfI_isExtendedBy("h.$@"));
+                CHECK(historyOfI_isExtendedBy("h.$1"));
+                // But non-ptr (value) returns are not aliased
+                CHECK_FALSE(historyOfI_isExtendedBy("main.k"));
+                auto historyOfHRet_isExtendedBy = results.instanceFinderFor("h.$@");
+                CHECK_FALSE(historyOfHRet_isExtendedBy("main.k"));
+            }
+        }
+    }
+}
+
 SCENARIO("Conditional-cast") {
     GIVEN("A condition-based cast") {
         auto const *code = R"c(
