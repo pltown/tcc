@@ -271,6 +271,11 @@ auto TCCCensusVisitor::VisitReturnStmt(ReturnStmt *rs) -> bool {
     // however, we track history to the point of return to facilitate anaylsis of
     // arg's history
 
+    if(!rs->getRetValue()) {
+        TCC_DEBUG(logKey, "Skipping: no return value");
+        return true;
+    }
+
     auto src = db_.add(makeTCCNodeForExpr(manifest_, *(rs->getRetValue())));
     auto dest = db_.add(makeTCCNodeForReturnStmt(manifest_, *rs));
     logUpdate(db_, src, dest);
