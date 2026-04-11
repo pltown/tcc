@@ -27,5 +27,6 @@ CC_KIND(ToVoidCast)
 CC_KIND(ArrayToPointerDecayCast)
 CC_KIND(FunctionToPointerDecayCast)
 CC_KIND(BuiltinFnToFnPtrCast)
+CC_KIND(FunctionReturn)
 CC_KIND(Unknown)
 

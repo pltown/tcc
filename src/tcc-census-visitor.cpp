@@ -96,6 +96,7 @@ namespace tcc {
 
         auto VisitVarDecl(VarDecl *vd) -> bool;
 
+        auto VisitReturnStmt(ReturnStmt *rs) -> bool;
         auto VisitSwitchStmt(SwitchStmt *ss) -> bool;
         auto VisitStmt(Stmt *s) -> bool;
 
@@ -194,6 +195,7 @@ static void append(CastHistories &archive, TCCNode::KeyRef const &key, std::opti
 static void logUpdate(TCCNodesDB const &db, TCCNode::KeyRef const &src, TCCNode::KeyRef const &dest);
 auto isPointerArithmeticOperation(BinaryOperator const &bop) -> bool;
 
+auto makeTCCNodeForReturnStmt(TCCManifest &manifest, ReturnStmt const &) -> TCCNode;
 auto makeTCCNodeForExpr(TCCManifest &manifest, Expr const &e) -> TCCNode;
 auto makeTCCNodeForVarDecl(TCCManifest &manifest, VarDecl const &var) -> TCCNode;
 auto makeTCCNodeForBinarySubExpr(TCCManifest &manifest, DeclRefExpr const &dre, SourceLocation const &opExprLoc) -> TCCNode;
@@ -250,6 +252,41 @@ auto TCCCensusVisitor::VisitVarDecl(VarDecl *vd) -> bool {
         trackAssignment(std::move(src), std::move(dest));
     }
     TCC_DEBUG(logKey, "Skipping: No init");
+
+    return true;
+}
+
+auto TCCCensusVisitor::VisitReturnStmt(ReturnStmt *rs) -> bool {
+    auto const logKey = String(context_, *rs);
+    TCC_DEBUG_FN(logKey + " <@" + stringLocation(context_, *rs) + ">");
+
+    if(manifest_.isSeen(rs)) {
+        TCC_DEBUG(logKey, "Skipping: Already seen.");
+        return true;
+    }
+    manifest_.markSeen(rs);
+
+    // if it's a value return, the variable being assigned this return value
+    // may ignore the return history.
+    // however, we track history to the point of return to facilitate anaylsis of
+    // arg's history
+
+    auto src = db_.add(makeTCCNodeForExpr(manifest_, *(rs->getRetValue())));
+    auto dest = db_.add(makeTCCNodeForReturnStmt(manifest_, *rs));
+    logUpdate(db_, src, dest);
+
+    auto scope = std::string(manifest_.currentFn());
+    auto firstContext = CastContext(CastContext::Kind::FunctionReturn, dest, scope);
+    auto cc = manifest_.conditionContext();
+    if(cc.empty()) {
+        TCC_DEBUG(logKey, "No condition context in manifest");
+    }
+    else {
+        TCC_DEBUG(logKey, "Condition context in manifest; size = {}", cc.size());
+    }
+    cc.push_back(firstContext);
+    append(hdb_, src, TypeProvenanceConstraint({src, dest}, std::move(cc)));
+    append(hdb_, dest);
 
     return true;
 }
@@ -341,6 +378,11 @@ auto TCCCensusVisitor::VisitStmt(Stmt *s) -> bool {
     if(auto *ss = dyn_cast<SwitchStmt>(s)) {
         TCC_DEBUG(logKey, "Stmt is SwitchStmt");
         return VisitSwitchStmt(ss);
+    }
+
+    if(auto *rs = dyn_cast<ReturnStmt>(s)) {
+        TCC_DEBUG(logKey, "Stmt is ReturnStmt");
+        return VisitReturnStmt(rs);
     }
 
     manifest_.markSeen(s);
@@ -1070,6 +1112,22 @@ auto qualifiedNameExpr(TCCManifest &manifest,
             }
         }
 
+        if(auto const *call = dyn_cast<CallExpr>(&e)) {
+            TCC_DEBUG(logKey, "Expr is a call expr");
+            auto const *callee = call->getCallee();
+            std::string fn;
+            if(callee) {
+                fn = String(context, *callee);
+            }
+            else {
+                auto const *fptr = getFptrFromFptrCall(context, *call);
+                fn = String(context, *fptr);
+            }
+            auto qn = TCCKey("$@", fn);
+            TCC_DEBUG(logKey, "QN: {}", String(qn));
+            return qn;
+        }
+
         TCC_DEBUG(logKey, "No DRE in expression, stringifying expr for qn");
         auto qn = TCCKey{"#lit/" + String(context, e) + "/"};
         TCC_DEBUG(logKey, "QN: {}", String(qn));
@@ -1583,6 +1641,29 @@ auto makeTCCNodeForMemberExpr(TCCManifest &manifest,
         TypeCategory(mex),
         sourceLocation(mex).printToString(context.getSourceManager()),
         makeTypeMetadata(context, member)
+    };
+}
+
+auto makeTCCNodeForReturnStmt(TCCManifest &manifest,
+        ReturnStmt const &rs)
+    -> TCCNode {
+
+    auto &context = manifest.context();
+    auto const logKey = String(context, rs);
+    TCC_DEBUG_FN(logKey);
+    TCC_DEBUG(logKey, "Building TCCNode for stmt: {}", String(context, rs));
+
+    auto const *ret = rs.getRetValue(); // for type data
+    auto qn = TCCKey("$@", std::string(manifest.currentFn()));
+
+    return {
+        {&context, &rs},
+        qn,
+        String(context, rs),
+        Typename(context, *ret),
+        TypeCategory(*ret),
+        sourceLocation(rs).printToString(context.getSourceManager()),
+        makeTypeMetadata(context, *ret)
     };
 }
 

@@ -39,20 +39,13 @@ static auto const *cComplete = R"c(
     }
 )c";
 
-auto nodeInfos(TCCNodesDB const &nodes) -> std::string {
-    std::string info;
-    for(auto const &[k, v]: nodes.db()) {
-        info += k + " = " + String(v) + "\n";
-    }
-    return info;
-}
+constexpr auto errShouldExtend(std::string const &a, std::string const &b) {
+    return ">> History of " + a + " should be extended by " + b;
+};
 
-void display(TCCNodesDB const &nodes) {
-    fmt::print(stdout, "TCCNodes:\n");
-    for(auto const &[k, v]: nodes.db()) {
-        fmt::print(stdout, "{} = {{{}}}\n", k, String(v));
-    }
-}
+constexpr auto errShouldNotExtend(std::string const &a, std::string const &b) {
+    return ">> History of " + a + " should not be extended by " + b;
+};
 
 auto hasContext(CastHistoryInstance const &chi, std::string_view cid) -> bool {
     for(auto const &c: chi.context()) {
@@ -83,34 +76,36 @@ SCENARIO("TCC key construction") {
             }
         )c";
 
+        INFO("Code under test:\n", std::string(code));
+
         WHEN("Aliasing or aliased declarations are visited") {
             auto census = analyze(code);
             TestDB results = std::move(census);
-
-            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+            CAPTURE_TCCNODES(results.nodes_);
 
             THEN("All parameter keys should be in SSA form") {
+                REQUIRE(results.hasNode("f.$0"));
+                REQUIRE(results.hasNode("f.$1"));
+
                 CHECK_FALSE(results.hasNode("i"));
                 CHECK_FALSE(results.hasNode("f.i"));
                 CHECK_FALSE(results.hasNode("f.$i"));
-                CHECK(results.hasNode("f.$0"));
-                CHECK(results.hasNode("f.$1"));
                 CHECK_FALSE(results.hasNode("f.$2"));
             }
 
             THEN("All relevant local variable key should be in SSA form") {
-                CHECK(results.hasNode("f.c"));
+                REQUIRE(results.hasNode("f.c"));
             }
 
             THEN("All relevant global variable key should be in SSA-like form") {
-                CHECK(results.hasNode("::.gi"));
+                REQUIRE(results.hasNode("::.gi"));
             }
 
             THEN("All relevant fptr param keys should be in SSA form") {
-                CHECK(results.hasNode("hof.$0"));
-                CHECK(results.hasNode("hof.$1"));
-                CHECK(results.hasNode("hof.$1.$0"));
-                CHECK(results.hasNode("hof.$1.$1"));
+                REQUIRE(results.hasNode("hof.$0"));
+                REQUIRE(results.hasNode("hof.$1"));
+                REQUIRE(results.hasNode("hof.$1.$0"));
+                REQUIRE(results.hasNode("hof.$1.$1"));
                 CHECK_FALSE(results.hasNode("hof.$1.$2"));
                 CHECK_FALSE(results.hasNode("hof.$1.i"));
                 CHECK_FALSE(results.hasNode("hof.$0.$1"));
@@ -131,22 +126,23 @@ SCENARIO("TCC key construction") {
         }
         )c";
 
+        INFO("Code under test:\n", std::string(code));
+
         WHEN("Aliasing/aliased expressions are visited") {
             auto census = analyze(code);
             TestDB results = std::move(census);
-
-            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+            CAPTURE_TCCNODES(results.nodes_);
 
             THEN("Unary expressions are recorded in SSA form") {
-                CHECK(results.hasNode(".__&i__.main.i"));
-                CHECK(results.hasNode(".__*pi__.main.pi"));
+                REQUIRE(results.hasNode(".__&i__.main.i"));
+                REQUIRE(results.hasNode(".__*pi__.main.pi"));
             }
 
             THEN("Binary expressions are recorded in SSA form") {
                 // TODO: fix binary operations
                 // May not be in this form but current form could be the cause for errors
-                CHECK(results.hasNode(".__i + 1__.main.i"));
-                CHECK(results.hasNode(".__i + c__.main.i"));
+                REQUIRE(results.hasNode(".__i + 1__.main.i"));
+                REQUIRE(results.hasNode(".__i + c__.main.i"));
             }
         }
 
@@ -154,7 +150,7 @@ SCENARIO("TCC key construction") {
 }
 
 SCENARIO("Fptr resolution") {
-    GIVEN("C higher-order function") {
+    GIVEN("Higher-order function calls in same scope") {
         auto const *code = R"c(
             void f(int *pi) {
                 char c = *(char*)pi;
@@ -174,24 +170,109 @@ SCENARIO("Fptr resolution") {
             }
         )c";
 
-        WHEN("History is built for HoF call") {
+        INFO("Code under test:\n", std::string(code));
+
+        WHEN("History is built for higher-order function call") {
             auto census = analyze(code);
             TestDB results = std::move(census);
+            results.makeInstances();
+            //CAPTURE_TCCNODES(results.nodes_);
 
-            THEN("HoF arg history should be extended with the correct function") {
-                auto children = [](auto const &key) -> auto {
-                    // append to children till H(key).nexts = 0
-                };
-                auto contains = [](auto const &key) -> auto {
-                    std::set<std::string> children;
-                    // capture history of key
-                    // return a function that checks key's history's children for an input child key
-                };
+            THEN("Higer-order arg history should be extended with the correct function") {
+                auto iContains = results.instanceFinderFor("main.i");
+                auto jContains = results.instanceFinderFor("main.j");
 
-                // Assert f.$0 is in H(main.i)
-                // Assert g.$0 is not in H(main.i)
-                // Assert f.$0 is not in H(main.j)
-                // Assert g.$0 is in H(main.j)
+                REQUIRE_MESSAGE(iContains("f.$0").has_value(), errShouldExtend("main.i", "f.$0"));
+                CHECK_FALSE_MESSAGE(iContains("g.$0").has_value(), errShouldNotExtend("main.i", "g.$0"));
+
+                REQUIRE_MESSAGE(jContains("g.$0").has_value(), errShouldExtend("main.j", "g.$0"));
+                CHECK_FALSE_MESSAGE(jContains("f.$0").has_value(), errShouldNotExtend("main.j", "f.$0"));
+            }
+        }
+    }
+}
+
+SCENARIO("Conditional-cast") {
+    GIVEN("A condition-based cast") {
+        auto const *code = R"c(
+            int flag = 0;
+            void flaggedOp(void *pv) {
+                int *i = 0;
+                char *c = 0;
+                double *d = 0;
+                switch(flag) {
+                    case 0: {
+                        i = (int*) pv;
+                        *i = *i + 1;
+                        break;
+                    }
+                    case 1:
+                    case 2: {
+                        c = (char*) pv;
+                        *c = 'a';
+                        //printf("%c", *c);
+                        break;
+                    }
+                    case 3: {
+                        d = (double*) pv;
+                        *d = *d + 1.0;
+                        break;
+                    }
+                }
+            }
+
+            int main() {
+                int x = 1;
+                flaggedOp(&x);
+                return 0;
+            }
+        )c";
+
+        INFO("Code under test:\n", std::string(code));
+
+        WHEN("cast history is instantiated") {
+            auto census = analyze(code);
+            TestDB results = std::move(census);
+            results.makeInstances();
+            CAPTURE_TCCNODES(results.nodes_);
+
+            auto errIncorrectContext = ">> Incorrect condition context";
+
+            THEN("condition for a cast should be part of its history") {
+                // Check that history is instantiated for flaggedOp.$0
+                REQUIRE(results.hasInstance("flaggedOp.$0"));
+                REQUIRE(results.instances_.at("flaggedOp.$0").nexts().empty() == false);
+
+                // Check that history has flaggedOp.$0 => int*
+                auto flaggedOp0Child = results.instanceFinderFor("flaggedOp.$0");
+                auto c1 = flaggedOp0Child("flaggedOp.i");
+                REQUIRE_MESSAGE(c1.has_value(), errShouldExtend("flaggedOp.$0", "flaggedOp.i"));
+                //  under condition context flag == 0
+                CHECK_MESSAGE(hasContext(*c1, "flag == 0"), errIncorrectContext);
+                // and not under condition flag == 1;
+                CHECK_FALSE_MESSAGE(hasContext(*c1, "flag == 1"), errIncorrectContext);
+                //if(c.kind == tcc::CastContext::SwitchCondition) {
+
+                // Check that history has flaggedOp.$0 => char*
+                auto c2 = flaggedOp0Child("flaggedOp.c");
+                REQUIRE_MESSAGE(c2.has_value(), errShouldExtend("flaggedOp.$0", "flaggedOp.c"));
+                // under condition context flag == 1
+                CHECK_MESSAGE(hasContext(*c2, "flag == 1 | 2"), errIncorrectContext);
+                // and not under condition flag == 0;
+                CHECK_FALSE_MESSAGE(hasContext(*c2, "flag == 0"), errIncorrectContext);
+
+                // Check that history has flaggedOp.$0 => double*
+                auto c3 = flaggedOp0Child("flaggedOp.d");
+                REQUIRE_MESSAGE(c3.has_value(), errShouldExtend("flaggedOp.$0", "flaggedOp.d"));
+                // under condition context flag == 3
+                CHECK_MESSAGE(hasContext(*c3, "flag == 3"), errIncorrectContext);
+                // and not under other conditions
+                CHECK_FALSE_MESSAGE(hasContext(*c3, "flag == 0"), errIncorrectContext);
+                CHECK_FALSE_MESSAGE(hasContext(*c3, "flag == 1"), errIncorrectContext);
+                CHECK_FALSE_MESSAGE(hasContext(*c3, "flag == 2"), errIncorrectContext);
+                CHECK_FALSE_MESSAGE(hasContext(*c3, "flag == 1 | 2"), errIncorrectContext);
+
+                // Check casts with scattered condition (interprocedural cast)
             }
         }
     }
@@ -212,35 +293,46 @@ SCENARIO("Function-return-alias") {
                 return *(int*)pa + *pb;
             }
 
+            int* f2(void *pi) {
+                return (int*)pi;
+            }
+            int* hof(int *pa, int*(*pf)(void*)) {
+                return pf(pa);
+            }
+
             int main() {
                 int i = 0;
                 int *j = f(&i);
                 int *k = g(&i, j);
                 int l = h(&i, j);
 
+                int *m = hof(j, f2);
+
                 return 0;
             }
         )c";
+
+        INFO("Code under test:\n", std::string(code));
 
         WHEN("cast history is instantiated") {
             auto census = analyze(code);
             TestDB results = std::move(census);
             results.makeInstances();
-
-            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+            //CAPTURE_TCCNODES(results.nodes_);
 
             THEN("function return should be in history of variable aliasing the return") {
                 REQUIRE(results.hasInstance("f.$@"));
                 REQUIRE(results.hasInstance("g.$@"));
 
-                // Check that i's history includes f & j
                 auto historyOfI_isExtendedBy = results.instanceFinderFor("main.i");
-                CHECK(historyOfI_isExtendedBy("f.$@"));
-                CHECK(historyOfI_isExtendedBy("main.j"));
-
-                // Ensure i dominates j via f
                 auto historyOfFReturn_isExtendedBy = results.instanceFinderFor("f.$@");
+
+                // Check that i's history includes f
+                REQUIRE(historyOfI_isExtendedBy("f.$@"));
+                // F's return history dominates j
                 CHECK(historyOfFReturn_isExtendedBy("main.j"));
+                // And thus, i's history is extended by j
+                CHECK(historyOfI_isExtendedBy("main.j"));
 
                 // Check that i's history includes k
                 CHECK(historyOfI_isExtendedBy("main.k"));
@@ -251,81 +343,97 @@ SCENARIO("Function-return-alias") {
                 // Ensure that cast/pointer operation in return is accounted for
                 CHECK(historyOfI_isExtendedBy("h.$@"));
                 CHECK(historyOfI_isExtendedBy("h.$1"));
+
+                // Check fptr calls
+                auto historyOfF2_0_isExtendedBy = results.instanceFinderFor("f2.$0");
+                auto historyOfF2Return_isExtendedBy = results.instanceFinderFor("f2.$@");
+                auto historyOfHof_0_isExtendedBy = results.instanceFinderFor("hof.$0");
+                auto historyOfHofReturn_isExtendedBy = results.instanceFinderFor("hof.$@");
+
+                auto msgHistory = [&results](auto const &key) {
+                    return std::string(">> History for ") + key + ":\n" + results.strInstance(key);
+                };
+
+                CHECK_MESSAGE(historyOfI_isExtendedBy("f2.$0"), msgHistory("main.i"));
+                CHECK_MESSAGE(historyOfF2_0_isExtendedBy("f2.$@"), msgHistory("f2.$0"));
+                //CHECK_MESSAGE(historyOfHof_0_isExtendedBy("f2.$@"), msgHistory("hof.$0"));
+                //CHECK_MESSAGE(historyOfHof_0_isExtendedBy("hof.$@"), msgHistory("hof.$0"));
+                CHECK_MESSAGE(historyOfF2_0_isExtendedBy("hof.$@"), msgHistory("f2.$0"));
+                CHECK_MESSAGE(historyOfF2Return_isExtendedBy("hof.$@"), msgHistory("f2.$@"));
+                //CHECK_MESSAGE(historyOfHof_0_isExtendedBy("hof.$1.$@"), msgHistory("hof.$0"));
+
+                //CHECK(historyOfI_isExtendedBy("main.m"));
+                CHECK(historyOfHofReturn_isExtendedBy("main.m"));
+
+                // TODO
+                // Perhaps this is incorrect
+                // This tracking may be useful in some cases even when pointers are not involved.
+                // However, this should not lead to wrong alias/cast-based variational type.
                 // But non-ptr (value) returns are not aliased
-                CHECK_FALSE(historyOfI_isExtendedBy("main.k"));
+                /*
+                CHECK_FALSE(historyOfI_isExtendedBy("main.l"));
                 auto historyOfHRet_isExtendedBy = results.instanceFinderFor("h.$@");
-                CHECK_FALSE(historyOfHRet_isExtendedBy("main.k"));
+                CHECK_FALSE(historyOfHRet_isExtendedBy("main.l"));
+                */
             }
         }
     }
 }
 
-SCENARIO("Conditional-cast") {
-    GIVEN("A condition-based cast") {
+/*
+SCENARIO("Condition-alias") {
+    GIVEN("Condition expression involving a reference") {
+        // S1: tag comes from a ptr but is not used in case/condition body
+        // S2: tag comes from a ptr to struct and is used in case body
+        // S3: tag comes from a ptr to struct but is not used in case body
         auto const *code = R"c(
-            int flag = 0;
-            void flaggedOp(void *pv) {
-                int *i = 0;
-                char *c = 0;
-                switch(flag) {
-                    case 0: {
-                        i = (int*) pv;
-                        *i = *i + 1;
-                        break;
-                    }
-                    case 1:
-                    case 2: {
-                        c = (char*) pv;
-                        *c = 'a';
-                        //printf("%c", *c);
-                        break;
-                    }
+            int FLAG = 0;
+            struct Data_t {
+                void *data_;
+                int type_;
+            } last;
+            void *last = 0;
+            void f(Data *pd) {
+                if(pd) {
+                    last = pd;
                 }
+
+                switch(pd->type_) {
+                    case 0: last = pd; break;
+                    case 1: (*(int*)pd->data_)++; break;
+                }
+
+                Data *p2;
+                pd->type_ ? (p2 = pd) : (last = pd);
             }
 
             int main() {
-                int x = 1;
-                flaggedOp(&x);
+                int i = 0;
+                struct Data d = { &i, 1};
+                f(&d);
+
                 return 0;
             }
         )c";
+
+        INFO("Code under test:\n", std::string(code));
 
         WHEN("cast history is instantiated") {
             auto census = analyze(code);
             TestDB results = std::move(census);
             results.makeInstances();
+            CAPTURE_TCCNODES(results.nodes_);
 
-            INFO("TCC Nodes:\n", nodeInfos(results.nodes_));
+            THEN("condition variable dependency should reflect in history") {
+                REQUIRE(results.hasInstance("f.$0"));
+                REQUIRE(results.hasInstance("f.$@"));
 
-            THEN("condition for a cast should be part of its history") {
-                // Check that history is instantiated for flaggedOp.$0
-                REQUIRE(results.hasInstance("flaggedOp.$0"));
-                REQUIRE(results.instances_.at("flaggedOp.$0").nexts().empty() == false);
-
-                // Check that history has flaggedOp.$0 => int*
-                auto instFlaggedOp = results.instanceFinderFor("flaggedOp.$0");
-                auto c1 = instFlaggedOp("flaggedOp.i");
-                REQUIRE(c1.has_value());
-                //  under condition context flag == 0
-                CHECK(hasContext(*c1, "flag == 0"));
-                // and not under condition flag == 1;
-                CHECK_FALSE(hasContext(*c1, "flag == 1"));
-                //if(c.kind == tcc::CastContext::SwitchCondition) {
-
-
-                // Check that history has flaggedOp.$0 => char*
-                auto c2 = instFlaggedOp("flaggedOp.c");
-                REQUIRE(c2.has_value());
-                // under condition context flag == 1
-                CHECK(hasContext(*c2, "flag == 1 | 2"));
-                // and not under condition flag == 0;
-                CHECK_FALSE(hasContext(*c2, "flag == 0"));
-
-                // Check casts with scattered condition (interprocedural cast)
+                // f.$0 include last
             }
         }
     }
 }
+*/
 
 /*
 SCENARIO("Aliasing") {

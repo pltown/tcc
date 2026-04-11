@@ -98,7 +98,13 @@ void display_json(const json_t* j) {
             break;
                           }
         case BINN_BOOL: {
-            vboolstr = j->data.bool_val ? "true" : "false";
+            //vboolstr = j->data.bool_val ? "true" : "false";
+            if(j->data.bool_val) {
+                vboolstr = "true";
+            }
+            else {
+                vboolstr = "false";
+            }
             printf("\"type\": \"bool\", \"value\": %s", vboolstr);
             break;
                         }

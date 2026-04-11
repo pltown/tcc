@@ -95,6 +95,10 @@ struct TestDB {
         return instances_.contains(key);
     }
 
+    auto strInstance(KeyRef const &key) -> std::string {
+        return String(census, instances_.at(key));
+    }
+
     auto instanceFinderFor(KeyRef const &root) {
         return [this, root](KeyRef const &key) -> std::optional<CastHistoryInstance> {
             if(!hasInstance(root)) {
@@ -108,7 +112,11 @@ struct TestDB {
                 auto top = std::move(unseen.top());
                 unseen.pop();
 
-                if(top.id() == key) {
+                auto const &sub = top.resolution(census);
+
+                //fmt::print(stdout, "[{}] Matching ({}) against top({} or {})\n", root, key, sub, top.id());
+                // TODO consider adding sub's history to stack with a seen flag
+                if(sub == key || top.id() == key) {
                     return top;
                 }
 
@@ -127,5 +135,15 @@ struct TestDB {
     }
     */
 };
+
+auto String(TCCNodesDB const &nodes) -> std::string {
+    std::string info;
+    for(auto const &[k, v]: nodes.db()) {
+        info += "\t\t" + k + " = " + String(v) + "\n";
+    }
+    return info;
+}
+
+#define CAPTURE_TCCNODES(x) INFO("TCC Nodes:\n", String(x))
 
 #endif // end HARNESS_H
