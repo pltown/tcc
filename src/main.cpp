@@ -4,6 +4,7 @@
 //   --> add annotations if needed
 
 //import tcc;
+#include "tcc-infer-variants.cpp"
 #include "tcc-census-visitor.cpp"
 #include "tcc-utils-threads.cpp"
 #include "logger.h"
@@ -244,8 +245,11 @@ auto run(unsigned jobs, std::vector<std::string> sources,
 
     printHistories(tdb, historyInstances);
 
-    fmt::print(stdout, "Finished run\n");
+    TCC_DEBUG("inference", "Inferring variants");
+    fmt::print(stdout, "Inferring variants\n");
+    inferVariants(tdb, historyInstances);
 
+    fmt::print(stdout, "Finished run\n");
     return 0;
 }
 
