@@ -114,25 +114,28 @@ namespace tcc {
             QualType b)
         -> bool {
 
+        if(a.isNull() || b.isNull()) {
+            TCC_ERROR("FirstMemberCheck", "Skipping: cannot check first member if A or B have invalid clang::QualType");
+            return false;
+        }
+
         auto const na = a.getAsString();
         auto const nb = b.getAsString();
 
         auto const logKey = "{" + na + "," + nb + "}?";
         TCC_DEBUG_FN(logKey);
 
-        if(!b->isRecordType()) {
-            return false;
-        }
-
         auto recordA = serialize(a);
         auto recordB = serialize(b);
         TCC_DEBUG(logKey, "record A: {}", recordA);
         TCC_DEBUG(logKey, "record B: {}", recordB);
 
+        /*
         if(recordA.size() > recordB.size()) {
             TCC_DEBUG(logKey, "B does not contain A: A is bigger than B");
             return false;
         }
+        */
 
         return recordB.find(recordA) != std::string::npos;
     }
@@ -244,6 +247,94 @@ namespace tcc {
         return u;
     }
 
+    void addVariantConstraints(TCCStore const &tdb,
+            CastHistoryInstance const &instance,
+            VariantConstraints &typeVariants,
+            bool strictMode = false) {
+
+        constexpr auto hasContextKind = [](CastContext::Kind k) {
+            return [k](ExtendedCastContext const &ecc) -> bool {
+                for(auto const &c: ecc) {
+                    if(c.kind() == k) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+        };
+
+        auto isUnionCast = [&](auto const &ecc) -> bool {
+            return hasContextKind(CastContext::Kind::UnionMemberCast)(ecc);
+        };
+        auto isExplicitCast = [&](auto const &ecc) -> bool {
+            return hasContextKind(CastContext::Kind::ExplicitCast)(ecc);
+        };
+        auto hasConditionContext = [&](auto const &ecc) -> bool {
+            return hasContextKind(CastContext::Kind::SwitchCondition)(ecc);
+        };
+
+        auto conditions = [](auto const &ecc) {
+            std::vector<std::string> conds;
+            for(auto const &c: ecc) {
+                if(c.kind() == CastContext::Kind::SwitchCondition) {
+                    conds.push_back(c.id());
+                }
+            }
+            return conds;
+        };
+
+        auto tag = [](auto const &cond) {
+            return cond.substr(0, cond.find(" =="));
+        };
+
+        std::stack<CastHistoryInstance> seen;
+        seen.push(instance);
+        while(!seen.empty()) {
+            auto top = std::move(seen.top());
+            seen.pop();
+            auto ta = definedType(tdb, top.id());
+            for(auto &&n: top.nexts()) {
+                auto tb = definedType(tdb, n.id());
+                bool isTaggedUnion = hasConditionContext(n.context())
+                                        && isUnionCast(n.context());
+                if(strictMode) {
+                    isTaggedUnion = isTaggedUnion
+                        // Unlike first-member subtyping, union defines the bigger but more general type
+                        // and the fields are the smaller but more specific type
+                        // So we need to reverse the containment check
+                        && doesBContainA(tdb, tb, ta)
+                        && (serialize(ta) != serialize(tb));
+                }
+
+                auto isConditionalAndFirstMember = hasConditionContext(n.context())
+                                        && isExplicitCast(n.context())
+                                        && isAFirstMemberOfB(tdb, ta, tb);
+                if(strictMode) {
+                    isConditionalAndFirstMember = isConditionalAndFirstMember
+                        && (serialize(ta) != serialize(tb));
+                }
+
+                if(isTaggedUnion || isConditionalAndFirstMember) {
+                    auto conds = conditions(n.context());
+                    auto t = tag(conds[0]);
+
+                    TCC_DEBUG("VariantConstraintCon", "{} |? {} through {}",
+                            ta.getAsString(), tb.getAsString(), t);
+
+                    std::set<std::string> rs;
+                    rs.insert(tb.getAsString());
+                    typeVariants.emplace_back(ta.getAsString(),
+                            std::move(rs), conds, t);
+                }
+
+                seen.push(std::move(n));
+                // TODO
+                // Filter cases where condition context has a different base than 'from'
+                // Filter literals
+            }
+        }
+    }
+
     using CastTrees = std::unordered_map<TCCNode::KeyRef, CastHistoryInstance>;
 
     void inferVariants(TCCStore const &tdb, CastTrees const &histories) {
@@ -253,82 +344,11 @@ namespace tcc {
         // - unionmemberaccess, then ?
         // resolution: ??
         VariantConstraints typeVariants;
+        typeVariants.reserve(histories.size()); // Aribtrary. Not every history instance/node in the graph will make a variant constraint.
 
         std::for_each(cbegin(histories), cend(histories),
             [&](auto const &node) {
-                auto const &from = node.first;
-                auto const &instance = node.second;
-                auto const &icc = instance.context();
-
-                constexpr auto hasContextKind = [](CastContext::Kind k) {
-                    return [k](ExtendedCastContext const &ecc) -> bool {
-                        for(auto const &c: ecc) {
-                            if(c.kind() == k) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    };
-                };
-
-                auto isUnionCast = [&](auto const &ecc) -> bool {
-                    return hasContextKind(CastContext::Kind::UnionMemberCast)(ecc);
-                };
-                auto isExplicitCast = [&](auto const &ecc) -> bool {
-                    return hasContextKind(CastContext::Kind::ExplicitCast)(ecc);
-                };
-                auto hasConditionContext = [&](auto const &ecc) -> bool {
-                    return hasContextKind(CastContext::Kind::SwitchCondition)(ecc);
-                };
-
-                auto conditions = [](auto const &ecc) {
-                    std::vector<std::string> conds;
-                    for(auto const &c: ecc) {
-                        if(c.kind() == CastContext::Kind::SwitchCondition) {
-                            conds.push_back(c.id());
-                        }
-                    }
-                    return conds;
-                };
-
-                auto tag = [](auto const &cond) {
-                    return cond.substr(0, cond.find(" =="));
-                };
-
-                std::stack<CastHistoryInstance> seen;
-                seen.push(instance);
-                while(!seen.empty()) {
-                    auto top = std::move(seen.top());
-                    seen.pop();
-                    auto ta = definedType(tdb, top.id());
-                    for(auto &&n: top.nexts()) {
-                        auto tb = definedType(tdb, n.id());
-                        auto isTaggedUnion = hasConditionContext(n.context())
-                                                && isUnionCast(n.context());
-
-                        auto isConditionalAndFirstMember = hasConditionContext(n.context())
-                                                && isExplicitCast(n.context())
-                                                && isAFirstMemberOfB(tdb, ta, tb);
-
-                        if(isTaggedUnion || isConditionalAndFirstMember) {
-                            auto conds = conditions(n.context());
-                            auto t = tag(conds[0]);
-
-                            TCC_DEBUG("VariantConstraintCon", "{} |? {} through {}",
-                                    ta.getAsString(), tb.getAsString(), t);
-
-                            std::set<std::string> rs;
-                            rs.insert(tb.getAsString());
-                            typeVariants.emplace_back(ta.getAsString(),
-                                    std::move(rs), conds, t);
-                        }
-
-                        seen.push(std::move(n));
-                        // TODO
-                        // Filter cases where condition context has a different base than 'from'
-                        // Filter literals
-                    }
-                }
+                addVariantConstraints(tdb, node.second, typeVariants);
             });
 
         // given:
@@ -338,28 +358,41 @@ namespace tcc {
         // Rectangle = Square
         auto unifierVariants = resolve(typeVariants);
 
-        auto show = [&tdb](auto const &u) {
-            constexpr auto logKey= "inferred";
+        auto show = [&tdb](auto const &u, auto const &logKey) {
             if(u.empty()) {
-                TCC_INFO(logKey, "Type inference did not find any variants");
-                llvm::outs() << "[VariantInference] Type inference did not find any variants\n";
+                //TCC_INFO(logKey, "Type inference did not find any variants");
+                fmt::print(FLOG, "[{}] Type inference did not find any variants", logKey);
+                llvm::outs() << "[" << logKey << "] Type inference did not find any variants\n";
                 return;
             }
 
             TCC_INFO(logKey, "Inferred variants:");
-            llvm::outs() << "[VariantInference] Inferred variants:\n";
+            llvm::outs() << "[" << logKey << "] Inferred variants:\n";
             for(auto const &[base, variants]: u) {
                 auto const &[tag, vs] = variants;
-                TCC_INFO(logKey, "'name': '{}', 'tag':'{}', 'fields':['{}']", base, tag, vs);
-                llvm::outs() << "[VariantInference] name:'" << base
+                //TCC_INFO(logKey, "'name': '{}', 'tag':'{}', 'fields':['{}']", base, tag, vs);
+                fmt::print(FLOG, "[{}] 'name': '{}', 'tag':'{}', 'fields':['{}']\n", logKey, base, tag, vs);
+                llvm::outs() << "[" << logKey << "] name:'" << base
                     << "'; tag:'" << tag
                     << "'; fields:'" << vs << "'\n";
             }
         };
 
         TCC_DEBUG("printInference", "Variants:");
-        show(unifierVariants);
+        show(unifierVariants, "VariantInference");
         TCC_DEBUG("printInference", "end Variants:");
+
+        VariantConstraints strictTypeVariants;
+        strictTypeVariants.reserve(histories.size());
+        std::for_each(cbegin(histories), cend(histories),
+            [&](auto const &node) {
+                addVariantConstraints(tdb, node.second, strictTypeVariants, true);
+            });
+        auto unifierStrictVariants = resolve(strictTypeVariants);
+
+        TCC_DEBUG("printInference", "(Strict-mode) Variants:");
+        show(unifierStrictVariants, "Strict-VariantInference");
+        TCC_DEBUG("printInference", "end (Strict-mode) Variants:");
     }
 
 } // end namespace tcc
