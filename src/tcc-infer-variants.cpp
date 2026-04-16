@@ -287,6 +287,14 @@ namespace tcc {
             return cond.substr(0, cond.find(" =="));
         };
 
+        auto equalTypes = [](QualType a, QualType b) -> bool {
+            if(a.isNull() || b.isNull()) {
+                TCC_ERROR("QualTypeCheck", "Skipping: cannot compare Qualtypes as one of A or B have invalid clang::QualType");
+                return false;
+            }
+            return a.getUnqualifiedType() == b.getUnqualifiedType();
+        };
+
         std::stack<CastHistoryInstance> seen;
         seen.push(instance);
         while(!seen.empty()) {
@@ -295,8 +303,10 @@ namespace tcc {
             auto ta = definedType(tdb, top.id());
             for(auto &&n: top.nexts()) {
                 auto tb = definedType(tdb, n.id());
-                bool isTaggedUnion = hasConditionContext(n.context())
-                                        && isUnionCast(n.context());
+                bool isTaggedUnion = !equalTypes(ta, tb)
+                    && hasConditionContext(n.context())
+                    && isUnionCast(n.context());
+
                 if(strictMode) {
                     isTaggedUnion = isTaggedUnion
                         // Unlike first-member subtyping, union defines the bigger but more general type
@@ -306,9 +316,11 @@ namespace tcc {
                         && (serialize(ta) != serialize(tb));
                 }
 
-                auto isConditionalAndFirstMember = hasConditionContext(n.context())
-                                        && isExplicitCast(n.context())
-                                        && isAFirstMemberOfB(tdb, ta, tb);
+                auto isConditionalAndFirstMember = !equalTypes(ta, tb)
+                    && hasConditionContext(n.context())
+                    && isExplicitCast(n.context())
+                    && isAFirstMemberOfB(tdb, ta, tb);
+
                 if(strictMode) {
                     isConditionalAndFirstMember = isConditionalAndFirstMember
                         && (serialize(ta) != serialize(tb));
