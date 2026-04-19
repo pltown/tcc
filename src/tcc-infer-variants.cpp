@@ -373,7 +373,7 @@ namespace tcc {
         auto show = [&tdb](auto const &u, auto const &logKey) {
             if(u.empty()) {
                 //TCC_INFO(logKey, "Type inference did not find any variants");
-                fmt::print(FLOG, "[{}] Type inference did not find any variants", logKey);
+                fmt::print(FLOG, "[{}] Type inference did not find any variants\n", logKey);
                 llvm::outs() << "[" << logKey << "] Type inference did not find any variants\n";
                 return;
             }
