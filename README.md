@@ -26,6 +26,14 @@ The included `setup-and-build.sh` avoids this problem by specifying both llvm an
 
 Meson setup is experimental and not working well currently.
 
+## Tests
+Unit tests are located in `/tests`.
+The current CMake always builds the test suite.
+To launch tests
+```sh
+$ bin/tcc-tests
+```
+
 ## Running
 Ensure that the project builds successfully before running the analyzer.
 
@@ -37,5 +45,33 @@ $ bin/tcc-check -v 0 --no-db <source>.cpp
 For multi-file project, first generate compile_commands.json:
 ```sh
 $ bin/tcc-check -v 0 compile_commands.json [--jobs 1]
+```
+### Enum type identification
+After a successful run, if any enums are identified they will be dumped in `tcc-variants.json` and `tcc-variants-strict.json`.
+The main difference between the two is that strict type checks for first-member idiom (v/s containment) if the types involved do not contain union types.
+
+The json files contain an array of the found enums with enum name as key, followed by tag and fields.
+e.g.
+```c
+enum ShapeType {
+    Rectangle,
+    Circle
+};
+
+struct Shape {
+    enum ShapeType tag;
+    union {
+        Rectangle,
+        Circle
+    };
+};
+// Some switch that uses Shape *s; s->type;
+//...
+```
+could produce following json (exact contents depend on how the use was identified):
+```json
+[{
+    "struct Shape *": {"fields": "Rectangle|Circle", "tag": "s->type"}
+}]
 ```
 
