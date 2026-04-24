@@ -84,7 +84,12 @@ add_library(${TCC_LIB} STATIC
     src/tcc-census-visitor.cpp
 )
 
-llvm_map_components_to_libnames(LLVM_LIBS support core irreader)
+# RTTI compatibility with LLVM
+if (DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    target_compile_options(${TCC_LIB} PRIVATE -fno-rtti)
+endif()
+
+llvm_map_components_to_libnames(LLVM_LIBS Support Core IRReader)
 #target_include_directories(${TCC_LIB}
 #    PUBLIC
 #    ${CMAKE_CURRENT_SOURCE_DIR}

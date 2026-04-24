@@ -9,6 +9,10 @@
 #include "tcc-historyInstance.cpp"
 #include "tcc-tccnode.cpp"
 
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/raw_ostream.h>
+
 #include <algorithm>
 #include <unordered_set>
 #include <unordered_map>
@@ -226,6 +230,31 @@ namespace tcc {
 
     using VariantConstraints = std::vector<VariantConstraint>;
     using Unifier = std::unordered_map<std::string, std::pair<std::string, std::string>>;
+
+    void jsonOut(Unifier const &u, char const * fname) {
+        using namespace llvm;
+        std::error_code ec;
+        llvm::raw_fd_ostream jout(fname, ec, llvm::sys::fs::FA_Write);
+        if(ec) {
+            TCC_ERROR("json-dump", "Could not open file: {}", ec.message());
+            return;
+        }
+
+        json::Object root;
+        json::Array jvs;
+        for(auto const &[base, variants]: u) {
+            json::Object jb;;
+            json::Object jv;;
+            auto const &[tag, vs] = variants;
+            jv["tag"] = tag;
+            jv["fields"] = vs;
+            jb[base] = std::move(jv);
+            jvs.push_back(std::move(jb));
+        }
+        json::Value fv(std::move(jvs));
+        jout << fv << "\n";
+    }
+
     auto resolve(VariantConstraints const &constraints) -> Unifier {
         std::list<Unifier::value_type> unifier;
 
@@ -392,6 +421,7 @@ namespace tcc {
 
         TCC_DEBUG("printInference", "Variants:");
         show(unifierVariants, "VariantInference");
+        jsonOut(unifierVariants, "tcc-variants.json");
         TCC_DEBUG("printInference", "end Variants:");
 
         VariantConstraints strictTypeVariants;
@@ -404,6 +434,7 @@ namespace tcc {
 
         TCC_DEBUG("printInference", "(Strict-mode) Variants:");
         show(unifierStrictVariants, "Strict-VariantInference");
+        jsonOut(unifierStrictVariants, "tcc-variants-strict.json");
         TCC_DEBUG("printInference", "end (Strict-mode) Variants:");
     }
 
